@@ -14,8 +14,8 @@ const header = `// ==UserScript==
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
 // @version      ${pkg.version}
-// @description  去广告、GitHub 风格美化、性能优化（可分级去除 AI 组件）、PR 评论自动展开
-// @description:en  Remove ads, GitHub-style skin, tiered performance mode (strip AI widgets), auto-expand collapsed PR comments
+// @description  去广告、GitHub 风格美化、分级性能优化（拦截 AI/营销/客服/验证码请求、裁剪图标雪碧图）、PR 评论自动展开、可视化设置面板
+// @description:en  Remove ads, GitHub-style skin, tiered performance mode (block AI/marketing/support/captcha requests, prune icon sprite), auto-expand PR comments, settings panel
 // @author       JavaZeroo
 // @match        https://gitcode.com/*
 // @icon         https://gitcode.com/favicon.ico
@@ -24,6 +24,7 @@ const header = `// ==UserScript==
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @license      MIT
 // @homepageURL  https://github.com/JavaZeroo/gitcode-enhance
 // @supportURL   https://github.com/JavaZeroo/gitcode-enhance/issues

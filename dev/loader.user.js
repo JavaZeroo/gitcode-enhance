@@ -10,5 +10,6 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @require      file:///D:/Code/gitcode-enhance/src/gitcode-enhance.js
 // ==/UserScript==
