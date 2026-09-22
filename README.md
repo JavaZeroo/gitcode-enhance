@@ -4,7 +4,7 @@
 
 ## 安装
 
-- GreasyFork: _(发布后补链接)_
+- GreasyFork: https://greasyfork.org/zh-CN/scripts/596921-gitcode-atomgit-增强
 - 或直接安装 GitHub 上的最新版本：[gitcode-enhance.user.js](https://raw.githubusercontent.com/JavaZeroo/gitcode-enhance/main/gitcode-enhance.user.js)（需要先装 [Tampermonkey](https://www.tampermonkey.net/)）
 
 ## 功能
