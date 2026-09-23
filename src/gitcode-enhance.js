@@ -12,7 +12,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.2.0';
+  const VERSION = '0.2.1';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/;
 
   function log(...args) {
@@ -42,8 +42,27 @@
     adblock: { udeskWidget: true, floatTools: true, aiTranslateNotice: true, promo: true },
     theme: { github: true },
     pr: { autoExpand: true },
+    // /dashboard 默认是 AI Agent 聊天页，打开 gitcode.com 也会跳到这里。改成落到工作台的某个真实页面。
+    dashboard: { home: 'latest-activity' },
     perf: { level: 'light', ...PERF_PRESETS.light },
   };
+
+  const DASHBOARD_HOMES = [
+    ['latest-activity', '最新动态'],
+    ['pulls', 'Pull Requests'],
+    ['issues', 'Issue'],
+    ['discussions', '讨论'],
+    ['kanban', '看板'],
+    ['none', '不跳转（保留 AI 聊天页）'],
+  ];
+  const DASHBOARD_AI_RE = /^\/dashboard\/?(atomcode\/?)?$/;
+
+  function dashboardRedirectTarget(path) {
+    const home = settings.dashboard.home;
+    if (!home || home === 'none') return null;
+    if (!DASHBOARD_HOMES.some(([k]) => k === home)) return null;
+    return DASHBOARD_AI_RE.test(path) ? '/dashboard/' + home : null;
+  }
 
   function deepMerge(base, patch) {
     const out = { ...base };
@@ -394,20 +413,21 @@
     const ab = settings.adblock;
     if (ab.udeskWidget) rules.push('#udesk_container, #udesk_iframe, #udesk_panel { display: none !important; }');
     if (ab.floatTools) rules.push('.gitcode-tools-float-root { display: none !important; }');
-    if (ab.promo) rules.push('[class*="sjtu"], .sign-in-entry, .campus-welcome, .user-preference-survey { display: none !important; }');
+    if (ab.promo) rules.push('[class*="sjtu"], .sign-in-entry, .campus-welcome, .user-preference-survey, .dashboard-sidebar__site-shortcuts a[href*="news.gitcode.com"] { display: none !important; }');
     if (rules.length) addStyle(rules.join('\n'));
 
     if (settings.perf.hideAiUi) {
-      // /dashboard 的沉浸式布局 = 左侧 300px 工作台侧栏（最新动态/参与的项目/我的协作，有用）+ 右侧 AI Agent 聊天区。
-      // 只藏聊天区，把侧栏放大居中当首页用；整块藏掉会变成空白页。
-      // 另外每个页面底部居中都有一个 fixed 的 AtomCode dock（272x52）。
+      // 1. 每个页面底部居中的 fixed AtomCode dock（272x52）
+      // 2. 顶栏右侧的 AtomCode 启动按钮
+      // 3. 工作台侧栏里的 AtomCode 入口 + 「AI 开发与资源」分组（Notebook / API 密钥 / 资源用量）
+      // /dashboard 本身的 AI 聊天页不用 CSS 藏（藏了只剩侧栏），而是由 dashboard.home 直接跳到工作台的真实页面。
       addStyle(`
-        .dashboard-shell__content--immersive,
         .atomcode-dock-container,
         .atomcode-dock-center-wrapper,
-        .repo-layout__dock-wrapper { display: none !important; }
-        .dashboard-shell--immersive .dashboard-sidebar { width: 100% !important; max-width: none !important; flex: 1 1 auto !important; }
-        .dashboard-shell--immersive .dashboard-sidebar__panel { width: 100% !important; max-width: 960px !important; margin: 0 auto !important; }
+        .repo-layout__dock-wrapper,
+        .atomcode-launcher,
+        .dashboard-sidebar__feed a[href="/dashboard/atomcode"],
+        .dashboard-sidebar__group:has(a[href="/dashboard/api-key"]) { display: none !important; }
       `);
     }
 
@@ -500,7 +520,7 @@
   // 设置面板（Shadow DOM，样式与页面隔离）
   // =====================================================================
   const PERF_TOGGLE_META = {
-    hideAiUi: { group: 'dom', label: '隐藏 AI 组件', desc: '/dashboard 的 AI Agent 聊天区（工作台侧栏保留并居中放大）、每页底部悬浮的 AtomCode dock。仅 CSS，零风险。' },
+    hideAiUi: { group: 'dom', label: '隐藏 AI 组件', desc: '每页底部悬浮的 AtomCode dock、顶栏 AtomCode 按钮、工作台侧栏的 AtomCode 入口和「AI 开发与资源」分组。仅 CSS，零风险。' },
     pruneIconSprite: { group: 'dom', label: '裁剪图标雪碧图', desc: '页面会注入 1389 个 <symbol>（4172 个节点），实际只用 ~50 个。摘掉未用的、按需放回：整页样式重算 -50%，DOM 节点 -4000。' },
     blockAiApi: { group: 'net', label: '拦截 AI 接口', desc: 'copilot-agent 会话/模型列表、token 用量、算力领取、AI review 检查。开启后 AI Agent 打不开。' },
     blockMarketing: { group: 'net', label: '拦截营销/活动请求', desc: '校园活动弹窗（含 2 张大图）、每日签到、用户调研、活动广告位、热搜词、积分商城，每页约 10 个请求。' },
@@ -525,6 +545,7 @@
     .row:last-child { border-bottom: 0; }
     .row .t { font-weight: 500; }
     .row .d { color: #59636e; font-size: 12px; margin-top: 2px; }
+    .sel { flex: none; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid #d1d9e0; border-radius: 6px; background: #f6f8fa; color: #1f2328; max-width: 220px; }
     .sw { flex: none; position: relative; width: 36px; height: 20px; margin-top: 2px; }
     .sw input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
     .sw i { position: absolute; inset: 0; background: #d1d9e0; border-radius: 10px; transition: background .15s; }
@@ -591,6 +612,19 @@
         h('label', { class: 'sw' }, input, h('i')));
     }
 
+    function selectRow(label, desc, options, get, set) {
+      const sel = h('select', { class: 'sel' });
+      for (const [v, text] of options) {
+        const o = h('option', { value: v, text });
+        if (v === get()) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener('change', () => { set(sel.value); render(); });
+      return h('div', { class: 'row' },
+        h('div', {}, h('div', { class: 't', text: label }), desc ? h('div', { class: 'd', text: desc }) : null),
+        sel);
+    }
+
     let bodyEl = null;
     let panel = null;
 
@@ -609,6 +643,7 @@
 
       body.appendChild(h('h2', { text: '功能增强' }));
       body.appendChild(toggleRow('PR 评论自动展开', '打开 PR 页后自动点开所有「此处折叠了 N 条消息」', () => draft.pr.autoExpand, (v) => (draft.pr.autoExpand = v)));
+      body.appendChild(selectRow('工作台首页', '打开 gitcode.com / 点「工作台」会落到 /dashboard 的 AI 聊天页，这里改成直接跳到工作台的某个页面', DASHBOARD_HOMES, () => draft.dashboard.home, (v) => (draft.dashboard.home = v)));
 
       body.appendChild(h('h2', { text: '性能优化' }));
       const seg = h('div', { class: 'seg' });
@@ -693,6 +728,15 @@
   // =====================================================================
   // 启动
   // =====================================================================
+  {
+    const target = dashboardRedirectTarget(location.pathname);
+    if (target) {
+      log('工作台首页跳转 →', target);
+      location.replace(target + location.search + location.hash);
+      return;
+    }
+  }
+
   installNetworkBlocking();
   if (settings.perf.pruneIconSprite) installIconSpritePruner();
   applyStyles();
@@ -705,6 +749,8 @@
     const path = location.pathname;
     if (path === lastPath) return;
     lastPath = path;
+    const target = dashboardRedirectTarget(path);
+    if (target) { location.replace(target); return; }
     declutter();
     if (settings.pr.autoExpand && PR_PAGE_RE.test(path)) autoExpandPRComments();
   }
