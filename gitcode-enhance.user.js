@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.2.1
+// @version      0.2.2
 // @description  去广告、GitHub 风格美化、分级性能优化（拦截 AI/营销/客服/验证码请求、裁剪图标雪碧图）、PR 评论自动展开、可视化设置面板
 // @description:en  Remove ads, GitHub-style skin, tiered performance mode (block AI/marketing/support/captcha requests, prune icon sprite), auto-expand PR comments, settings panel
 // @author       JavaZeroo
@@ -35,7 +35,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.2.1';
+  const VERSION = '0.2.2';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/;
 
   function log(...args) {
@@ -67,6 +67,7 @@
     pr: { autoExpand: true },
     // /dashboard 默认是 AI Agent 聊天页，打开 gitcode.com 也会跳到这里。改成落到工作台的某个真实页面。
     dashboard: { home: 'latest-activity' },
+    ui: { headerButton: true },
     perf: { level: 'light', ...PERF_PRESETS.light },
   };
 
@@ -666,6 +667,7 @@
 
       body.appendChild(h('h2', { text: '功能增强' }));
       body.appendChild(toggleRow('PR 评论自动展开', '打开 PR 页后自动点开所有「此处折叠了 N 条消息」', () => draft.pr.autoExpand, (v) => (draft.pr.autoExpand = v)));
+      body.appendChild(toggleRow('顶栏显示设置按钮', '页面右上角的齿轮图标，点开这个面板（也可以按 Alt+G，或用 Tampermonkey 菜单）', () => draft.ui.headerButton, (v) => (draft.ui.headerButton = v)));
       body.appendChild(selectRow('工作台首页', '打开 gitcode.com / 点「工作台」会落到 /dashboard 的 AI 聊天页，这里改成直接跳到工作台的某个页面', DASHBOARD_HOMES, () => draft.dashboard.home, (v) => (draft.dashboard.home = v)));
 
       body.appendChild(h('h2', { text: '性能优化' }));
@@ -747,6 +749,36 @@
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('⚙️ 打开设置面板 (Alt+G)', openPanel);
   }
+
+  // 页面内入口：顶栏右侧塞一个齿轮按钮（Tampermonkey 菜单项需要 GM_registerMenuCommand 授权，
+  // 旧版加载器没有这个 grant 就看不到菜单，所以页面里也放一个）。
+  function installHeaderButton() {
+    if (!settings.ui.headerButton) return;
+    const ID = 'gitcode-enhance-header-btn';
+    addStyle(`
+      #${ID} { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin-right: 8px;
+        border: 0; border-radius: 6px; background: transparent; color: #59636e; cursor: pointer; }
+      #${ID}:hover { background: #f6f8fa; color: #1f2328; }
+      #${ID} svg { width: 18px; height: 18px; }
+    `);
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      if (document.getElementById(ID)) { clearInterval(timer); return; }
+      const bar = document.querySelector('.g-toolbar-right');
+      if (!bar) { if (tries > 40) clearInterval(timer); return; }
+      const btn = document.createElement('button');
+      btn.id = ID;
+      btn.type = 'button';
+      btn.title = 'GitCode Enhance 设置 (Alt+G)';
+      btn.setAttribute('aria-label', 'GitCode Enhance 设置');
+      btn.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.04.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"></path></svg>';
+      btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openPanel(); });
+      bar.insertBefore(btn, bar.firstChild);
+      clearInterval(timer);
+    }, 300);
+  }
+  installHeaderButton();
 
   // =====================================================================
   // 启动
