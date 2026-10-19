@@ -2,9 +2,9 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.2.2
-// @description  去广告、GitHub 风格美化、分级性能优化（拦截 AI/营销/客服/验证码请求、裁剪图标雪碧图）、PR 评论自动展开、可视化设置面板
-// @description:en  Remove ads, GitHub-style skin, tiered performance mode (block AI/marketing/support/captcha requests, prune icon sprite), auto-expand PR comments, settings panel
+// @version      0.3.0
+// @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
+// @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
 // @match        https://gitcode.com/*
 // @icon         https://gitcode.com/favicon.ico
@@ -35,8 +35,8 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.2.2';
-  const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/;
+  const VERSION = '0.3.0';
+  const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
     console.log('[gitcode-enhance]', ...args);
@@ -45,6 +45,46 @@
   // 调试用：把关键状态写到 <html data-gce-*>，方便在页面上下文里读取（沙箱里的变量页面看不到）
   function debug(key, val) {
     try { document.documentElement.setAttribute('data-gce-' + key, String(val)); } catch (e) { /* ignore */ }
+  }
+
+  function afterPageReady(run) {
+    let cancelled = false, idle = null, timer = null;
+    function schedule() {
+      if (cancelled) return;
+      if (W.requestIdleCallback) idle = W.requestIdleCallback(() => { if (!cancelled) run(); }, { timeout: 1200 });
+      else timer = setTimeout(() => { if (!cancelled) run(); }, 100);
+    }
+    if (document.readyState === 'complete') schedule();
+    else W.addEventListener('load', schedule, { once: true });
+    return () => { cancelled = true; W.removeEventListener('load', schedule); if (idle !== null) W.cancelIdleCallback(idle); clearTimeout(timer); };
+  }
+
+  function backToTop() {
+    // 支持站点内部滚动容器，不扫描整页；只沿正文祖先链回到顶部。
+    let node = document.querySelector('.dfd-main, .detail-main, main');
+    while (node) { if (node.scrollTop) node.scrollTo({ top: 0, behavior: 'instant' }); node = node.parentElement; }
+    W.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  function textMatchOffsets(text, needle, sensitive) {
+    if (!needle) return [];
+    const haystack = sensitive ? text : text.toLowerCase(), query = sensitive ? needle : needle.toLowerCase();
+    const offsets = [];
+    for (let i = haystack.indexOf(query); i !== -1; i = haystack.indexOf(query, i + query.length)) offsets.push([i, i + needle.length]);
+    return offsets;
+  }
+
+  function highlightCodeText(code, needle, sensitive) {
+    if (!code || !W.CSS?.highlights || !W.Highlight) return;
+    const walker = document.createTreeWalker(code, 4), nodes = [];
+    let text = '', node;
+    while ((node = walker.nextNode())) { nodes.push({ node, start: text.length, end: text.length + node.textContent.length }); text += node.textContent; }
+    const ranges = textMatchOffsets(text, needle, sensitive).map(([start, end]) => {
+      const a = nodes.find(n => n.end > start), b = nodes.find(n => n.end >= end);
+      const range = document.createRange(); range.setStart(a.node, start - a.start); range.setEnd(b.node, end - b.start); return range;
+    });
+    W.CSS.highlights.set('gce-keyword', new W.Highlight(...ranges));
+    return ranges[0];
   }
 
   // =====================================================================
@@ -64,12 +104,19 @@
   const DEFAULTS = {
     adblock: { udeskWidget: true, floatTools: true, aiTranslateNotice: true, promo: true },
     theme: { github: true },
-    pr: { autoExpand: true },
+    pr: { autoExpand: true, reviewTools: true },
     // /dashboard 默认是 AI Agent 聊天页，打开 gitcode.com 也会跳到这里。改成落到工作台的某个真实页面。
     dashboard: { home: 'latest-activity' },
-    ui: { headerButton: true },
+    ui: { headerButton: true, floatingPosition: 'right-middle', reviewPosition: 'right-bottom', searchPosition: 'right-top' },
     perf: { level: 'light', ...PERF_PRESETS.light },
   };
+
+  const FLOAT_POSITIONS = [['right-top', '右上'], ['right-middle', '右侧居中'], ['right-bottom', '右下'], ['left-top', '左上'], ['left-middle', '左侧居中'], ['left-bottom', '左下']];
+  function floatingStyle(position, fallback) {
+    const value = FLOAT_POSITIONS.some(([key]) => key === position) ? position : fallback;
+    const [side, vertical] = value.split('-');
+    return `${side}:16px;${vertical === 'top' ? 'top:150px;' : vertical === 'bottom' ? 'bottom:16px;' : 'top:50%;transform:translateY(-50%);'}`;
+  }
 
   const DASHBOARD_HOMES = [
     ['latest-activity', '最新动态'],
@@ -200,13 +247,14 @@
     },
   ];
 
-  const activeRules = BLOCK_RULES.filter((r) => settings.perf[r.key] && !(r.skipPaths && r.skipPaths.test(location.pathname)));
+  const activeRules = BLOCK_RULES.filter((r) => settings.perf[r.key]);
   const blockedUrlSeen = new Set();
 
   function matchRule(url) {
     url = String(url || '');
     if (!url) return null;
     for (const r of activeRules) {
+      if (r.skipPaths && r.skipPaths.test(location.pathname)) continue;
       if (r.patterns.some((p) => url.includes(p))) return r;
     }
     return null;
@@ -227,7 +275,7 @@
     const origFetch = W.fetch;
     if (typeof origFetch === 'function') {
       W.fetch = function (input, init) {
-        const url = typeof input === 'string' ? input : input && input.url;
+        const url = typeof input === 'string' ? input : input && (input.url || input.href);
         const rule = matchRule(url);
         if (rule) {
           recordBlock(rule, url);
@@ -237,24 +285,9 @@
       };
     }
 
-    // XHR
-    const XHR = W.XMLHttpRequest;
-    if (XHR && XHR.prototype) {
-      const origOpen = XHR.prototype.open;
-      const origSend = XHR.prototype.send;
-      XHR.prototype.open = function (method, url) {
-        const rule = matchRule(url);
-        this.__gceBlocked = !!rule;
-        if (rule) recordBlock(rule, url);
-        return origOpen.apply(this, arguments);
-      };
-      // 被拦的 XHR 直接不发、也不派发 error：站点用 axios，派 error 会弹「连接出错」提示。
-      // 这些请求都是上报/小组件类的 fire-and-forget，让它永远 pending 最安静。
-      XHR.prototype.send = function () {
-        if (this.__gceBlocked) return;
-        return origSend.apply(this, arguments);
-      };
-    }
+    // 保留原生 XHR。GitCode 的业务错误处理会把主动拒绝显示成“连接出错”，
+    // 且不统一识别 Axios 取消标记。这里放行，避免永久 pending 或伪造成功响应。
+    // 网络拦截仅作用于 fetch、sendBeacon 和 script，面板只统计实际拦截项。
 
     // sendBeacon（埋点常用）
     if (W.navigator && typeof W.navigator.sendBeacon === 'function') {
@@ -356,6 +389,10 @@
     const stash = new Map(); // symbol id -> { sym, sprite }
     const sprites = new Set();
 
+    function updateSpriteStats() {
+      debug('pruned', `${stats.spriteSymbols}->${stats.spriteSymbols - stats.spritePruned} nodes-${stats.spriteNodesRemoved}`);
+    }
+
     const idOf = (use) => {
       const href = use.getAttribute('href') || use.getAttribute('xlink:href') || '';
       return href.startsWith('#') ? href.slice(1) : null;
@@ -369,6 +406,8 @@
       entry.sprite.appendChild(entry.sym);
       stats.spriteRestored++;
       stats.spritePruned--;
+      stats.spriteNodesRemoved -= entry.nodeCount;
+      updateSpriteStats();
     }
 
     function scanUses(root) {
@@ -387,15 +426,16 @@
       let removedNodes = 0, pruned = 0;
       for (const sym of symbols) {
         if (!sym.id || used.has(sym.id)) continue;
-        removedNodes += sym.getElementsByTagName('*').length + 1;
-        stash.set(sym.id, { sym, sprite: svg });
+        const nodeCount = sym.getElementsByTagName('*').length + 1;
+        removedNodes += nodeCount;
+        stash.set(sym.id, { sym, sprite: svg, nodeCount });
         sym.remove();
         pruned++;
       }
       stats.spriteSymbols += symbols.length;
       stats.spritePruned += pruned;
       stats.spriteNodesRemoved += removedNodes;
-      debug('pruned', `${stats.spriteSymbols}->${stats.spriteSymbols - stats.spritePruned} nodes-${stats.spriteNodesRemoved}`);
+      updateSpriteStats();
       log(`图标雪碧图裁剪：${symbols.length} 个 symbol，暂存 ${pruned} 个未使用的（减少 ${removedNodes} 个 DOM 节点）`);
     }
 
@@ -433,6 +473,12 @@
   }
 
   function applyStyles() {
+    addStyle(`
+      .gce-search-hit { outline:3px solid #ffbf00 !important; outline-offset:-3px; }
+      .gce-search-hit > td { background-color:rgba(255,191,0,.2) !important; }
+      .gce-search-cell { box-shadow:inset 5px 0 #ffbf00 !important; }
+      ::highlight(gce-keyword) { background-color:#ffe031; color:#171717; text-decoration:underline; }
+    `);
     const rules = [];
     const ab = settings.adblock;
     if (ab.udeskWidget) rules.push('#udesk_container, #udesk_iframe, #udesk_panel { display: none !important; }');
@@ -462,9 +508,9 @@
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
             "PingFang SC", "Microsoft YaHei", Helvetica, Arial, sans-serif !important;
         }
-        .g-header, .repo-header-inner { background: #ffffff !important; box-shadow: none !important; }
-        .repo-markdown-card, .set-skeleton, .comment-box {
-          background: #ffffff !important; border-radius: 6px !important; box-shadow: none !important;
+        .g-header, .repo-header-inner { box-shadow: none !important; }
+        .repo-markdown-card {
+          border-radius: 6px !important; box-shadow: none !important;
         }
       `);
     }
@@ -496,56 +542,472 @@
   }
 
   // README 是异步加载出来的，切换仓库/路由后要重新轮询等它出现
+  let stopDeclutter = () => {};
   function declutter() {
-    let tries = 0;
-    const timer = setInterval(() => {
-      tries++;
-      let done = true;
-      if (settings.adblock.aiTranslateNotice && !hideAiTranslationNotice()) done = false;
+    stopDeclutter();
+    let timer = null;
+    function scan() {
+      timer = null;
+      if (settings.adblock.aiTranslateNotice) hideAiTranslationNotice();
       if (settings.adblock.promo) hidePromoImages();
-      if (done || tries > 20) clearInterval(timer);
-    }, 500);
+    }
+    const observer = new MutationObserver(records => {
+      if (timer !== null) return;
+      const relevant = records.some(record => Array.from(record.addedNodes).some(node => node.nodeType === 1 &&
+        (node.matches?.('a, img') || node.querySelector?.('a, img'))));
+      if (relevant) timer = setTimeout(scan, 250);
+    });
+    if (settings.adblock.aiTranslateNotice || settings.adblock.promo) observer.observe(document.body, { childList: true, subtree: true });
+    scan();
+    stopDeclutter = () => { observer.disconnect(); clearTimeout(timer); };
   }
 
   // =====================================================================
   // 功能：PR 讨论区自动展开所有折叠的消息
   // 折叠块 ".collapse-btn"（“此处折叠了 363 条消息 查看更多”），点开后里面可能还嵌套新的折叠块，
-  // 所以反复点，直到连续几轮都找不到为止。Vue 的 click 绑在内层 .collapse-btn__more 上。
+  // 用 DOM 观察等待延迟加载的评论，路由离开时取消。Vue 的 click 绑在内层 .collapse-btn__more 上。
   // =====================================================================
+  let cancelPRExpansion = () => {};
   function autoExpandPRComments() {
+    cancelPRExpansion();
+    const path = location.pathname;
     const COLLAPSE_SELECTOR = '.collapse-btn__more';
     const CLICK_DELAY_MS = 500;
-    const MAX_IDLE_ROUNDS = 6; // 连续 3s 没有新折叠块才算完（后台标签页里渲染会被节流，放宽一点）
     const MAX_TICKS = 300;
-    let idleRounds = 0, ticks = 0, expanded = 0;
+    let ticks = 0, expanded = 0, timer = null;
+    const observer = new MutationObserver(schedule);
+    function stop() {
+      clearTimeout(timer);
+      observer.disconnect();
+    }
+    cancelPRExpansion = stop;
+    function schedule() {
+      if (timer === null) timer = setTimeout(tick, CLICK_DELAY_MS);
+    }
 
     function tick() {
-      ticks++;
+      timer = null;
+      if (location.pathname !== path) { stop(); return; }
       const btn = document.querySelector(COLLAPSE_SELECTOR);
       if (btn) {
-        idleRounds = 0;
+        ticks++;
         expanded++;
+        stats.prExpanded++;
         btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      } else {
-        idleRounds++;
-      }
-      if (ticks < MAX_TICKS && idleRounds < MAX_IDLE_ROUNDS) setTimeout(tick, CLICK_DELAY_MS);
-      else {
-        stats.prExpanded += expanded;
-        log(`PR 评论自动展开完成，共点开 ${expanded} 处折叠块`);
+        if (ticks >= MAX_TICKS) { stop(); log(`PR 评论自动展开达到上限，共点开 ${expanded} 处折叠块`); return; }
+        schedule();
       }
     }
 
     log('开始自动展开 PR 折叠评论…');
-    setTimeout(tick, 800);
+    observer.observe(document, { childList: true, subtree: true });
+    schedule();
+  }
+
+  // =====================================================================
+  // 文件改动页的独立评审工具；不接管站点文件树、折叠或已读状态。
+  // =====================================================================
+  let stopReviewTools = () => {};
+
+  // 只解引用 diff 所需字段，不执行页面脚本，也不读取登录凭据。
+  function readDiffSnapshot(serialized, path) {
+    const route = path.match(/^\/([^/]+)\/([^/]+)\/(?:pull|merge_requests)\/(\d+)\/diffs\/?$/);
+    if (!route) throw new Error('请在 PR 文件改动页搜索');
+    const table = JSON.parse(serialized);
+    if (!Array.isArray(table)) throw new Error('无法识别页面差异数据');
+    const key = `pr-diffs:${encodeURIComponent(decodeURIComponent(route[1]) + '/' + decodeURIComponent(route[2]))}:${route[3]}`;
+    const entry = table.find(v => v && !Array.isArray(v) && typeof v === 'object' && Object.hasOwn(v, key));
+    const value = ref => Number.isInteger(ref) && ref >= 0 ? table[ref] : undefined;
+    const record = entry && value(entry[key]);
+    const refs = record && value(record.files);
+    if (!Array.isArray(refs)) throw new Error('未取得该 PR 的差异数据，请刷新页面重试');
+    const files = refs.map(ref => {
+      const f = value(ref);
+      if (!f || typeof f !== 'object') throw new Error('文件差异格式发生变化');
+      return {
+        path: value(f.filePath) || value(f.newPath) || value(f.oldPath),
+        diff: value(f.diff), binary: !!value(f.binary), tooLarge: !!value(f.tooLarge),
+        collapsed: !!value(f.collapsed),
+      };
+    });
+    const total = Number(value(record.changesCount));
+    return { files, total: Number.isFinite(total) ? total : files.length, commit: value(record.commitId) || '' };
+  }
+
+  function parseDiffLines(diff) {
+    const rows = [];
+    let oldLine = 0, newLine = 0, oldLeft = 0, newLeft = 0, inHunk = false, valid = true;
+    for (const line of diff.split('\n')) {
+      const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (header) {
+        if (inHunk && (oldLeft || newLeft)) valid = false;
+        oldLine = Number(header[1]); newLine = Number(header[3]);
+        oldLeft = header[2] === undefined ? 1 : Number(header[2]);
+        newLeft = header[4] === undefined ? 1 : Number(header[4]);
+        inHunk = true; continue;
+      }
+      if (!inHunk || line.startsWith('\\')) continue;
+      if (!oldLeft && !newLeft) { if (line && /^[ +\-]/.test(line)) valid = false; continue; }
+      const kind = line[0];
+      if (![' ', '+', '-'].includes(kind)) { if (line) valid = false; continue; }
+      rows.push({ kind, text: line.slice(1).replace(/\r$/, ''), oldLine: kind === '+' ? null : oldLine, newLine: kind === '-' ? null : newLine });
+      if (kind !== '+') { oldLine++; oldLeft--; }
+      if (kind !== '-') { newLine++; newLeft--; }
+      if (oldLeft < 0 || newLeft < 0) valid = false;
+    }
+    return { rows, complete: valid && inHunk && oldLeft === 0 && newLeft === 0 };
+  }
+
+  function searchDiffRows(files, needle, caseSensitive = false, changesOnly = false) {
+    if (!needle) return [];
+    const query = caseSensitive ? needle : needle.toLowerCase();
+    const hits = [];
+    for (const file of files) for (const row of file.rows) {
+      if (changesOnly && row.kind === ' ') continue;
+      if ((caseSensitive ? row.text : row.text.toLowerCase()).includes(query)) hits.push({ file, row });
+    }
+    return hits;
+  }
+
+  let closeDiffSearch = () => {};
+  let diffSearchCache = null;
+  function openDiffSearch() {
+    const existing = document.getElementById('gce-diff-search');
+    if (existing) { const input = existing.shadowRoot.querySelector('input[type=search]'); input.focus(); input.select(); return; }
+    closeDiffSearch();
+    const url = location.href, path = location.pathname;
+    const host = document.createElement('div'); host.id = 'gce-diff-search';
+    const root = host.attachShadow({ mode: 'open' });
+    const controller = new W.AbortController();
+    let disposed = false, indexed = [], snapshot = null, hits = [], jumpTimer = null, active = -1, searchTimer = null, searchGeneration = 0, highlighted = null;
+    const el = (tag, text) => { const n = document.createElement(tag); if (text) n.textContent = text; return n; };
+    const style = el('style'); style.textContent = `
+      :host { color-scheme:light; } :host-context(html.dark),:host-context(html[data-theme="black"]) { color-scheme:dark; }
+      * { box-sizing:border-box; } .backdrop { position:fixed; ${floatingStyle(settings.ui.searchPosition, 'right-top')} z-index:2147482900; max-width:calc(100vw - 32px); }
+      .panel { width:min(560px,calc(100vw - 32px)); max-height:55vh; display:flex; flex-direction:column; gap:12px; padding:18px;
+        background:var(--ui-bg,#fff); color:var(--theme-text,#1f2328); border:1px solid var(--ui-border,#d1d9e0); border-radius:10px; font:14px system-ui,sans-serif; }
+      .head,.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; } h2 { font-size:17px; margin:0; flex:1; }
+      input[type=search] { min-width:150px; flex:1; } input,button { font:inherit; color:inherit; background:var(--theme-default-ui-bg,#fff); border:1px solid var(--ui-border,#d1d9e0); border-radius:5px; padding:7px; }
+      button { cursor:pointer; } button:disabled { opacity:.5; cursor:default; } .results { overflow:auto; min-height:80px; }
+      .hit { width:100%; display:block; text-align:left; margin-bottom:8px; padding:10px; }
+      .hit:hover { border-color:#0969da; } .code { white-space:pre-wrap; overflow-wrap:anywhere; font:13px ui-monospace,monospace; margin-top:6px; }
+      .info { font-size:12px; color:var(--ui-text-dimmed,#59636e); } mark { background:#f0c040; color:#161616; }
+    `;
+    const backdrop = el('div'); backdrop.className = 'backdrop';
+    const panel = el('section'); panel.className = 'panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'PR 差异内容搜索'); panel.setAttribute('aria-modal', 'false');
+    const heading = el('div'); heading.className = 'head';
+    const close = el('button', '关闭搜索'); close.type = 'button';
+    heading.append(el('h2', '查找 PR 差异 · Ctrl+F'), close);
+    const controls = el('div'); controls.className = 'controls';
+    const input = el('input'); input.type = 'search'; input.placeholder = '搜索全部文件的差异内容'; input.setAttribute('aria-label', '差异内容关键词');
+    const sensitive = el('input'); sensitive.type = 'checkbox';
+    const changes = el('input'); changes.type = 'checkbox';
+    const caseLabel = el('label', '区分大小写 '); caseLabel.appendChild(sensitive);
+    const changeLabel = el('label', '仅新增/删除行 '); changeLabel.appendChild(changes);
+    const previous = el('button', '上一处'), next = el('button', '下一处');
+    previous.type = next.type = 'button';
+    previous.addEventListener('click', () => move(-1)); next.addEventListener('click', () => move(1));
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); move(event.shiftKey ? -1 : 1); } });
+    controls.append(input, previous, next, caseLabel, changeLabel);
+    const coverage = el('div', '正在读取完整差异数据…'); coverage.className = 'info';
+    const summary = el('div'); summary.setAttribute('role', 'status');
+    const results = el('div'); results.className = 'results';
+    const hint = el('div', '搜索 diff 中的新增、删除及上下文行，不包括未改动的完整文件。Enter 下一处，Shift+Enter 上一处，Esc 关闭。'); hint.className = 'info';
+    panel.append(heading, controls, coverage, hint, summary, results); backdrop.appendChild(panel); root.append(style, backdrop); document.body.appendChild(host);
+    function clearHighlight() {
+      highlighted?.classList.remove('gce-search-hit');
+      highlighted?.querySelectorAll('.gce-search-cell').forEach(cell => cell.classList.remove('gce-search-cell'));
+      W.CSS?.highlights?.delete('gce-keyword'); highlighted = null;
+    }
+    function dismiss() { host.remove(); }
+    function cleanup() { disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++; clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true); }
+    closeDiffSearch = cleanup;
+    function escape(event) { if (event.key === 'Escape') { event.stopPropagation(); cleanup(); } }
+    document.addEventListener('keydown', escape, true); close.addEventListener('click', cleanup);
+    backdrop.addEventListener('click', event => { if (event.target === backdrop) cleanup(); });
+    function jump(hit) {
+      clearTimeout(jumpTimer);
+      const file = document.getElementById('mr_' + hit.file.path);
+      if (!file) { summary.textContent = '当前页面没有该文件，请刷新文件改动页后重试。'; return; }
+      const blob = file.querySelector('.dfd-path-new')?.getAttribute('href') || '';
+      if (snapshot.commit && blob.includes('/blob/') && !blob.includes('/blob/' + snapshot.commit + '/')) {
+        summary.textContent = 'PR 提交已变化。请刷新页面后搜索，避免跳到错误版本。'; return;
+      }
+      const side = hit.row.kind === '-' ? 'old' : 'new';
+      const number = side === 'old' ? hit.row.oldLine : hit.row.newLine;
+      const selector = `[data-${side}-line="${number}"]`;
+      // 已渲染的行直接跳转，避免先到文件顶部再跳回来触发两轮懒加载。
+      if (!file.querySelector(selector)) file.scrollIntoView({ block: 'start', behavior: 'instant' });
+      let attempts = 0;
+      function locate() {
+        if (disposed || location.href !== url) return;
+        const row = file.querySelector(selector);
+        if (row) {
+          row.scrollIntoView({ block: 'center', behavior: 'instant' });
+          clearHighlight();
+          row.classList.add('gce-search-hit'); highlighted = row;
+          const cells = row.querySelectorAll('.dft-code-ctn');
+          const code = cells.length > 1 ? cells[side === 'old' ? 0 : cells.length - 1] : cells[0];
+          code?.closest('td')?.classList.add('gce-search-cell');
+          const range = highlightCodeText(code, input.value, sensitive.checked);
+          // 查找窗可能遮住右侧代码，将目标行放到查找窗下方的可见区域。
+          const overlay = panel.getBoundingClientRect(), target = (range || code || row).getBoundingClientRect();
+          if (target.right > overlay.left && target.left < overlay.right && target.top < overlay.bottom && target.bottom > overlay.top) {
+            const delta = target.top - Math.min(W.innerHeight - 80, overlay.bottom + 40);
+            let scroller = row.parentElement;
+            while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(W.getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+            (scroller || W).scrollBy({ top: delta, behavior: 'instant' });
+          }
+        } else if (++attempts < 12) jumpTimer = setTimeout(locate, 150);
+        else summary.textContent = `已定位文件 ${hit.file.path}，目标行尚未渲染或文件已折叠；可关闭搜索后展开查看。`;
+      }
+      locate();
+    }
+    function move(direction) {
+      if (!hits.length) return;
+      active = active < 0 ? (direction > 0 ? 0 : hits.length - 1) : (active + direction + hits.length) % hits.length;
+      render(); jump(hits[active]);
+    }
+    function render() {
+      previous.disabled = next.disabled = !hits.length;
+      results.replaceChildren();
+      summary.textContent = input.value ? `${active < 0 ? 0 : active + 1} / ${hits.length} 条匹配行` : '输入关键词开始搜索';
+      const needle = input.value;
+      for (const hit of (active < 0 ? hits.slice(0, 3) : [hits[active]])) {
+        const item = el('button'); item.type = 'button'; item.className = 'hit';
+        const side = hit.row.kind === '-' ? '旧' : '新';
+        item.appendChild(el('div', `${hit.file.path} · ${side}行 ${hit.row.kind === '-' ? hit.row.oldLine : hit.row.newLine} · ${hit.row.kind === '+' ? '新增' : hit.row.kind === '-' ? '删除' : '上下文'}`));
+        const code = el('div'); code.className = 'code';
+        const text = hit.row.text;
+        const index = (sensitive.checked ? text : text.toLowerCase()).indexOf(sensitive.checked ? needle : needle.toLowerCase());
+        code.append(document.createTextNode(text.slice(0, index)), el('mark', text.slice(index, index + needle.length)), document.createTextNode(text.slice(index + needle.length)));
+        item.appendChild(code); item.addEventListener('click', () => { active = hits.indexOf(hit); render(); jump(hit); }); results.appendChild(item);
+      }
+    }
+    function search(immediate = false) {
+      clearTimeout(searchTimer); clearTimeout(jumpTimer); clearHighlight();
+      const generation = ++searchGeneration;
+      active = -1; hits = []; render();
+      const needle = sensitive.checked ? input.value : input.value.toLowerCase();
+      if (!needle) return;
+      previous.disabled = next.disabled = true;
+      summary.textContent = '正在查找…';
+      let fileIndex = 0, rowIndex = 0;
+      const found = [];
+      function step() {
+        if (disposed || generation !== searchGeneration) return;
+        let budget = 1000;
+        while (fileIndex < indexed.length && budget-- > 0) {
+          const file = indexed[fileIndex], row = file.rows[rowIndex++];
+          if (!row) { fileIndex++; rowIndex = 0; continue; }
+          if ((!changes.checked || row.kind !== ' ') && (sensitive.checked ? row.text : row.lowerText).includes(needle)) found.push({ file, row });
+        }
+        if (fileIndex < indexed.length) searchTimer = setTimeout(step, 0);
+        else { hits = found; render(); }
+      }
+      searchTimer = setTimeout(step, immediate ? 0 : 100);
+    }
+    input.addEventListener('input', () => search()); sensitive.addEventListener('change', () => search(true)); changes.addEventListener('change', () => search(true));
+    input.focus();
+    (async () => {
+      try {
+        const payload = document.getElementById('__NUXT_DATA__');
+        const currentCommit = document.querySelector('.dfd-path-new[href*="/blob/"]')?.getAttribute('href')?.split('/blob/')[1]?.split('/')[0];
+        const cacheKey = url + ':' + currentCommit;
+        if (diffSearchCache?.key === cacheKey) {
+          ({ snapshot, indexed } = diffSearchCache);
+          coverage.textContent = diffSearchCache.coverage;
+          search(true); return;
+        }
+        // 默认比较直接复用本页数据；SPA 残留或自定义比较则重新读取当前 URL。
+        if (payload && !location.search) {
+          try {
+            const candidate = readDiffSnapshot(payload.textContent, path);
+            if (currentCommit && candidate.commit === currentCommit) snapshot = candidate;
+          } catch { /* SPA 的初始数据可能属于另一页 */ }
+        }
+        if (!snapshot) {
+          const response = await W.fetch(url, { credentials: 'same-origin', signal: controller.signal });
+          if (!response.ok) throw new Error(`读取失败（HTTP ${response.status}）`);
+          const html = await response.text();
+          if (disposed) return;
+          if (html.length > 12 * 1024 * 1024) throw new Error('差异页面过大，暂不建立搜索索引');
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const data = doc.getElementById('__NUXT_DATA__');
+          if (!data) throw new Error('页面没有提供差异数据，请确认登录状态后重试');
+          snapshot = readDiffSnapshot(data.textContent, path);
+        }
+        let incomplete = Math.max(0, snapshot.total - snapshot.files.length), binary = 0;
+        indexed = snapshot.files.flatMap(file => {
+          if (file.binary) { binary++; return []; }
+          if (typeof file.diff !== 'string' || !file.diff) { incomplete++; return []; }
+          const parsed = parseDiffLines(file.diff);
+          if (!parsed.complete || file.tooLarge) incomplete++;
+          return [{ ...file, rows: parsed.rows.map(row => ({ ...row, lowerText: row.text.toLowerCase() })) }];
+        });
+        coverage.textContent = `已索引 ${indexed.length}/${snapshot.total} 个文件 · 提交 ${snapshot.commit.slice(0, 8) || '未知'}${binary ? ` · ${binary} 个二进制文件不支持文本搜索` : ''}${incomplete ? ` · ${incomplete} 个文件缺失或差异不完整，搜索可能遗漏` : ' · 已覆盖服务器提供的全部文本 diff'}`;
+        diffSearchCache = { key: cacheKey, snapshot, indexed, coverage: coverage.textContent };
+        search(true);
+      } catch (error) { if (!disposed) { coverage.textContent = error.message; summary.textContent = '未能建立索引，请关闭后重试。'; } }
+    })();
+  }
+
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f'
+        && settings.pr.reviewTools && /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) {
+      event.preventDefault(); event.stopImmediatePropagation(); openDiffSearch();
+    }
+  }, true);
+
+  function installReviewTools() {
+    stopReviewTools();
+    if (!settings.pr.reviewTools || !/^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) return;
+    let host = null, root = null, timer = null, signature = '', selected = '';
+    let query, picker, previous, next, count, focus, current, feedback;
+    let scrollTimer = null, visibleFile = null;
+    let allFiles = [], matches = [];
+    function button(text, action) {
+      const el = document.createElement('button');
+      el.type = 'button'; el.textContent = text; el.addEventListener('click', action);
+      return el;
+    }
+    function navigate(index) {
+      const file = matches[index];
+      if (!file) return;
+      selected = file.id;
+      file.node.scrollIntoView({ block: 'start', behavior: 'auto' });
+      render();
+      trackCurrent();
+    }
+    function trackCurrent() {
+      scrollTimer = null;
+      if (!current || !allFiles.length) return;
+      // 兼容页面滚动和站点内部滚动容器，不假定 window.scrollY。
+      visibleFile = allFiles.find(f => f.node.getBoundingClientRect().bottom > 221) || allFiles[allFiles.length - 1];
+      current.textContent = visibleFile.path;
+      current.title = visibleFile.path;
+      // 搜索时保留用户选中的匹配项；无筛选时让前后跳转跟随当前阅读位置。
+      if (!query.value.trim() && root.activeElement !== picker && selected !== visibleFile.id) {
+        selected = visibleFile.id;
+        picker.value = selected;
+        const index = matches.findIndex(f => f.id === selected);
+        previous.disabled = index <= 0; next.disabled = index < 0 || index >= matches.length - 1;
+        count.textContent = `${index + 1} / ${matches.length}（共 ${allFiles.length}）`;
+      }
+    }
+    function onScroll() {
+      if (scrollTimer === null) scrollTimer = setTimeout(trackCurrent, 100);
+    }
+    function render() {
+      const needle = query.value.trim().toLowerCase();
+      matches = allFiles.filter(f => f.path.toLowerCase().includes(needle));
+      if (!matches.some(f => f.id === selected)) selected = matches[0]?.id || '';
+      picker.replaceChildren();
+      for (const f of matches) {
+        const option = document.createElement('option');
+        option.value = f.id; option.textContent = f.path; picker.appendChild(option);
+      }
+      picker.value = selected;
+      picker.disabled = !matches.length;
+      const index = matches.findIndex(f => f.id === selected);
+      previous.disabled = index <= 0;
+      next.disabled = index < 0 || index >= matches.length - 1;
+      count.textContent = matches.length ? `${index + 1} / ${matches.length}（共 ${allFiles.length}）` : '没有匹配文件';
+    }
+    function refresh() {
+      timer = null;
+      const main = document.querySelector('.dfd-main');
+      if (!main) return;
+      if (!host || !host.isConnected) {
+        host?.remove();
+        host = document.createElement('div'); host.id = 'gce-review-tools';
+        root = host.attachShadow({ mode: 'open' });
+        const style = document.createElement('style');
+        style.textContent = `
+          :host { display:block; position:fixed; ${floatingStyle(settings.ui.reviewPosition, 'right-bottom')} max-width:calc(100vw - 32px); z-index:1000; color-scheme:light; }
+          :host-context(html.dark),:host-context(html[data-theme="black"]) { color-scheme:dark; }
+          .bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px; margin-bottom:8px;
+            border:1px solid var(--ui-border,#d1d9e0); border-radius:6px; background:var(--ui-bg,#fff);
+            color:var(--theme-text,#1f2328); font:13px system-ui,sans-serif; }
+          input,select,button { font:inherit; color:inherit; background:var(--theme-default-ui-bg,#fff);
+            border:1px solid var(--ui-border,#d1d9e0); border-radius:5px; padding:5px 8px; min-width:0; }
+          input { width:160px; } select { flex:1; min-width:140px; max-width:420px; }
+          button { cursor:pointer; } button:disabled { opacity:.45; cursor:default; }
+          button[aria-pressed="true"] { outline:2px solid #0969da; }
+          .count { font-size:12px; white-space:nowrap; }
+          .heading { display:flex; align-items:center; gap:8px; width:100%; }
+          .current { flex:1; min-width:0; max-width:480px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .details { display:flex; flex-wrap:wrap; align-items:center; gap:8px; width:100%; }
+          .details[hidden] { display:none; }
+          .feedback { font-size:12px; color:var(--ui-text-dimmed,#59636e); }
+          @media(max-width:640px) { .bar { max-width:calc(100vw - 54px); } input,select { width:100%; max-width:none; } }
+        `;
+        const bar = document.createElement('div'); bar.className = 'bar';
+        bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'PR 评审工具');
+        query = document.createElement('input'); query.type = 'search'; query.placeholder = '搜索文件路径';
+        query.setAttribute('aria-label', '搜索评审文件'); query.addEventListener('input', render);
+        picker = document.createElement('select'); picker.setAttribute('aria-label', '跳转到评审文件');
+        picker.addEventListener('change', () => navigate(matches.findIndex(f => f.id === picker.value)));
+        previous = button('上一文件', () => navigate(matches.findIndex(f => f.id === selected) - 1));
+        next = button('下一文件', () => navigate(matches.findIndex(f => f.id === selected) + 1));
+        count = document.createElement('span'); count.className = 'count'; count.setAttribute('aria-live', 'polite');
+        focus = button('专注模式', () => {
+          const on = host.dataset.focus !== 'true';
+          host.dataset.focus = String(on);
+          focus.setAttribute('aria-pressed', String(on));
+        });
+        focus.setAttribute('aria-pressed', 'false');
+        current = document.createElement('span'); current.className = 'current';
+        const heading = document.createElement('div'); heading.className = 'heading';
+        const label = document.createElement('strong'); label.textContent = '正在阅读';
+        const details = document.createElement('div'); details.className = 'details'; details.id = 'review-details';
+        const collapse = button('收起工具', () => {
+          details.hidden = !details.hidden;
+          collapse.textContent = details.hidden ? '展开工具' : '收起工具';
+          collapse.setAttribute('aria-expanded', String(!details.hidden));
+        });
+        collapse.setAttribute('aria-expanded', 'true'); collapse.setAttribute('aria-controls', details.id);
+        feedback = document.createElement('span'); feedback.className = 'feedback'; feedback.setAttribute('role', 'status');
+        const copy = button('复制当前路径', async () => {
+          if (!visibleFile) return;
+          try { await W.navigator.clipboard.writeText(visibleFile.path); feedback.textContent = '路径已复制'; }
+          catch { feedback.textContent = '复制失败，请从文件标题手动复制'; }
+        });
+        heading.append(label, current, collapse);
+        const contentSearch = button('查找差异 Ctrl+F', openDiffSearch);
+        details.append(query, picker, previous, next, count, focus, contentSearch, copy, feedback);
+        bar.append(heading, details); root.append(style, bar); document.body.appendChild(host);
+        signature = '';
+      }
+      const files = Array.from(main.querySelectorAll('.dfd-file[id]')).map(node => ({
+        node, id: node.id, path: node.querySelector('.dfd-path-new')?.textContent.trim() || node.id.replace(/^mr_/, ''),
+      }));
+      const key = JSON.stringify(files.map(f => [f.id, f.path]));
+      allFiles = files;
+      if (signature !== key) { signature = key; render(); }
+      trackCurrent();
+    }
+    const observer = new MutationObserver(records => {
+      // 代码行懒加载不改变文件目录；忽略这些高频变动。
+      const filesChanged = records.some(record => [...record.addedNodes, ...record.removedNodes].some(node =>
+        node.nodeType === 1 && (node.matches?.('.dfd-file, .dfd-main') || node.querySelector?.('.dfd-file'))));
+      if ((!host?.isConnected || filesChanged) && timer === null) timer = setTimeout(refresh, 150);
+    });
+    observer.observe(document, { childList: true, subtree: true });
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    refresh();
+    stopReviewTools = () => {
+      observer.disconnect(); clearTimeout(timer); clearTimeout(scrollTimer); host?.remove();
+      document.removeEventListener('scroll', onScroll, true);
+    };
   }
 
   // =====================================================================
   // 设置面板（Shadow DOM，样式与页面隔离）
   // =====================================================================
   const PERF_TOGGLE_META = {
-    hideAiUi: { group: 'dom', label: '隐藏 AI 组件', desc: '每页底部悬浮的 AtomCode dock、顶栏 AtomCode 按钮、工作台侧栏的 AtomCode 入口和「AI 开发与资源」分组。仅 CSS，零风险。' },
-    pruneIconSprite: { group: 'dom', label: '裁剪图标雪碧图', desc: '页面会注入 1389 个 <symbol>（4172 个节点），实际只用 ~50 个。摘掉未用的、按需放回：整页样式重算 -50%，DOM 节点 -4000。' },
+    hideAiUi: { group: 'dom', label: '隐藏 AI 组件', desc: '每页底部悬浮的 AtomCode dock、顶栏 AtomCode 按钮、工作台侧栏的 AtomCode 入口和「AI 开发与资源」分组。仅 CSS，不拦截网络请求。' },
+    pruneIconSprite: { group: 'dom', label: '裁剪图标雪碧图', desc: '暂存未使用的图标，出现引用时按需放回。实际净减少的 DOM 节点数见下方统计，收益随页面而变化。' },
     blockAiApi: { group: 'net', label: '拦截 AI 接口', desc: 'copilot-agent 会话/模型列表、token 用量、算力领取、AI review 检查。开启后 AI Agent 打不开。' },
     blockMarketing: { group: 'net', label: '拦截营销/活动请求', desc: '校园活动弹窗（含 2 张大图）、每日签到、用户调研、活动广告位、热搜词、积分商城，每页约 10 个请求。' },
     blockAnalytics: { group: 'net', label: '拦截埋点统计', desc: 'api/v1/report 行为上报（pageview 等）。' },
@@ -554,44 +1016,45 @@
   };
 
   const PANEL_CSS = `
-    :host { all: initial; }
+    :host { all: initial; color-scheme: light; }
+    :host-context(html.dark), :host-context(html[data-theme="black"]) { color-scheme: dark; }
     * { box-sizing: border-box; }
-    .backdrop { position: fixed; inset: 0; background: rgba(27,31,36,.5); z-index: 2147483000; display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow: auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei", Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2328; line-height: 1.5; }
-    .panel { background: #fff; border: 1px solid #d1d9e0; border-radius: 12px; width: 100%; max-width: 640px; box-shadow: 0 8px 24px rgba(140,149,159,.2); }
-    .hd { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid #d1d9e0; }
+    .backdrop { position: fixed; inset: 0; background: rgba(27,31,36,.5); z-index: 2147483000; display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow: auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei", Helvetica, Arial, sans-serif; font-size: 14px; color: var(--theme-text, #1f2328); line-height: 1.5; }
+    .panel { background: var(--theme-default-ui-bg, #fff); border: 1px solid var(--ui-border, #d1d9e0); border-radius: 12px; width: 100%; max-width: 640px; box-shadow: 0 8px 24px rgba(140,149,159,.2); }
+    .hd { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--ui-border, #d1d9e0); }
     .hd h1 { font-size: 16px; font-weight: 600; margin: 0; }
-    .hd .ver { color: #59636e; font-weight: 400; font-size: 12px; margin-left: 8px; }
-    .close { background: none; border: 0; font-size: 20px; line-height: 1; color: #59636e; cursor: pointer; padding: 4px 6px; border-radius: 6px; }
-    .close:hover { background: #f6f8fa; color: #1f2328; }
+    .hd .ver { color: var(--ui-text-dimmed, #59636e); font-weight: 400; font-size: 12px; margin-left: 8px; }
+    .close { background: none; border: 0; font-size: 20px; line-height: 1; color: var(--ui-text-dimmed, #59636e); cursor: pointer; padding: 4px 6px; border-radius: 6px; }
+    .close:hover { background: var(--ui-bg, #f6f8fa); color: var(--theme-text, #1f2328); }
     .body { padding: 4px 20px 8px; max-height: calc(100vh - 220px); overflow: auto; }
-    h2 { font-size: 12px; font-weight: 600; color: #59636e; text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 6px; }
-    .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid #eef1f4; }
+    h2 { font-size: 12px; font-weight: 600; color: var(--ui-text-dimmed, #59636e); text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 6px; }
+    .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--ui-border, #eef1f4); }
     .row:last-child { border-bottom: 0; }
     .row .t { font-weight: 500; }
-    .row .d { color: #59636e; font-size: 12px; margin-top: 2px; }
-    .sel { flex: none; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid #d1d9e0; border-radius: 6px; background: #f6f8fa; color: #1f2328; max-width: 220px; }
+    .row .d { color: var(--ui-text-dimmed, #59636e); font-size: 12px; margin-top: 2px; }
+    .sel { flex: none; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--ui-border, #d1d9e0); border-radius: 6px; background: var(--ui-bg, #f6f8fa); color: var(--theme-text, #1f2328); max-width: 220px; }
     .sw { flex: none; position: relative; width: 36px; height: 20px; margin-top: 2px; }
     .sw input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
-    .sw i { position: absolute; inset: 0; background: #d1d9e0; border-radius: 10px; transition: background .15s; }
+    .sw i { position: absolute; inset: 0; background: var(--ui-border, #d1d9e0); border-radius: 10px; transition: background .15s; }
     .sw i::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
     .sw input:checked + i { background: #1f883d; }
     .sw input:checked + i::after { transform: translateX(16px); }
-    .seg { display: inline-flex; border: 1px solid #d1d9e0; border-radius: 6px; overflow: hidden; margin: 4px 0 8px; }
-    .seg button { background: #f6f8fa; border: 0; border-right: 1px solid #d1d9e0; padding: 5px 14px; font: inherit; font-size: 13px; cursor: pointer; color: #1f2328; }
+    .seg { display: inline-flex; border: 1px solid var(--ui-border, #d1d9e0); border-radius: 6px; overflow: hidden; margin: 4px 0 8px; }
+    .seg button { background: var(--ui-bg, #f6f8fa); border: 0; border-right: 1px solid var(--ui-border, #d1d9e0); padding: 5px 14px; font: inherit; font-size: 13px; cursor: pointer; color: var(--theme-text, #1f2328); }
     .seg button:last-child { border-right: 0; }
     .seg button.on { background: #0969da; color: #fff; }
     .seg button:disabled { cursor: default; }
-    .sub { font-size: 12px; color: #59636e; margin: 8px 0 2px; font-weight: 600; }
+    .sub { font-size: 12px; color: var(--ui-text-dimmed, #59636e); margin: 8px 0 2px; font-weight: 600; }
     .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 4px; }
-    .stat { background: #f6f8fa; border-radius: 6px; padding: 8px 10px; }
+    .stat { background: var(--ui-bg, #f6f8fa); border-radius: 6px; padding: 8px 10px; }
     .stat b { display: block; font-size: 18px; font-weight: 600; }
-    .stat span { font-size: 12px; color: #59636e; }
-    .list { font-size: 12px; color: #59636e; margin-top: 6px; max-height: 120px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .stat span { font-size: 12px; color: var(--ui-text-dimmed, #59636e); }
+    .list { font-size: 12px; color: var(--ui-text-dimmed, #59636e); margin-top: 6px; max-height: 120px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .list div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ft { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid #d1d9e0; background: #f6f8fa; border-radius: 0 0 12px 12px; }
-    .ft .note { font-size: 12px; color: #59636e; }
-    .btn { font: inherit; font-size: 13px; font-weight: 500; padding: 5px 14px; border-radius: 6px; border: 1px solid #d1d9e0; background: #f6f8fa; color: #1f2328; cursor: pointer; }
-    .btn:hover { background: #eef1f4; }
+    .ft { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--ui-border, #d1d9e0); background: var(--ui-bg, #f6f8fa); border-radius: 0 0 12px 12px; }
+    .ft .note { font-size: 12px; color: var(--ui-text-dimmed, #59636e); }
+    .btn { font: inherit; font-size: 13px; font-weight: 500; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--ui-border, #d1d9e0); background: var(--ui-bg, #f6f8fa); color: var(--theme-text, #1f2328); cursor: pointer; }
+    .btn:hover { background: var(--ui-border, #eef1f4); }
     .btn.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
     .btn.primary:hover { background: #1a7f37; }
     .btn.danger { color: #d1242f; }
@@ -637,7 +1100,7 @@
     }
 
     function selectRow(label, desc, options, get, set) {
-      const sel = h('select', { class: 'sel' });
+      const sel = h('select', { class: 'sel', 'aria-label': label });
       for (const [v, text] of options) {
         const o = h('option', { value: v, text });
         if (v === get()) o.selected = true;
@@ -663,11 +1126,15 @@
       body.appendChild(toggleRow('隐藏活动 / 营销位', '活动广告轮播、校园活动弹窗、签到入口', () => draft.adblock.promo, (v) => (draft.adblock.promo = v)));
 
       body.appendChild(h('h2', { text: '美化' }));
-      body.appendChild(toggleRow('GitHub 风格', '白底、6px 圆角、系统字体栈，不用阴影 / 毛玻璃', () => draft.theme.github, (v) => (draft.theme.github = v)));
+      body.appendChild(toggleRow('GitHub 风格', '保留原生背景和评论布局，仅调整字体、README 圆角及阴影', () => draft.theme.github, (v) => (draft.theme.github = v)));
 
       body.appendChild(h('h2', { text: '功能增强' }));
       body.appendChild(toggleRow('PR 评论自动展开', '打开 PR 页后自动点开所有「此处折叠了 N 条消息」', () => draft.pr.autoExpand, (v) => (draft.pr.autoExpand = v)));
+      body.appendChild(toggleRow('PR 文件评审工具', '文件改动页提供路径搜索、前后文件跳转和专注模式。专注模式默认关闭，离开该页后恢复。', () => draft.pr.reviewTools, (v) => (draft.pr.reviewTools = v)));
       body.appendChild(toggleRow('顶栏显示设置按钮', '页面右上角的齿轮图标，点开这个面板（也可以按 Alt+G，或用 Tampermonkey 菜单）', () => draft.ui.headerButton, (v) => (draft.ui.headerButton = v)));
+      for (const [key, label] of [['floatingPosition', '悬浮设置按钮位置'], ['reviewPosition', '评审工具栏位置'], ['searchPosition', 'PR 查找栏位置']]) {
+        body.appendChild(selectRow(label, '选择屏幕上的展示位置，保存后生效。', FLOAT_POSITIONS, () => draft.ui[key], value => (draft.ui[key] = value)));
+      }
       body.appendChild(selectRow('工作台首页', '打开 gitcode.com / 点「工作台」会落到 /dashboard 的 AI 聊天页，这里改成直接跳到工作台的某个页面', DASHBOARD_HOMES, () => draft.dashboard.home, (v) => (draft.dashboard.home = v)));
 
       body.appendChild(h('h2', { text: '性能优化' }));
@@ -685,7 +1152,7 @@
         const m = PERF_TOGGLE_META[k];
         body.appendChild(toggleRow(m.label, m.desc, () => draft.perf[k], (v) => (draft.perf[k] = v)));
       }
-      body.appendChild(h('div', { class: 'sub', text: '网络层（需刷新生效）' }));
+      body.appendChild(h('div', { class: 'sub', text: '网络层（需刷新生效；XHR 兼容放行）' }));
       for (const k of PERF_TOGGLES.filter((k) => PERF_TOGGLE_META[k].group === 'net')) {
         const m = PERF_TOGGLE_META[k];
         body.appendChild(toggleRow(m.label, m.desc, () => draft.perf[k], (v) => (draft.perf[k] = v)));
@@ -696,8 +1163,8 @@
       for (const b of stats.blocked) byCat[b.cat] = (byCat[b.cat] || 0) + 1;
       const catText = Object.entries(byCat).map(([c, n]) => `${c} ${n}`).join(' · ') || '无';
       const grid = h('div', { class: 'stats' },
-        h('div', { class: 'stat' }, h('b', { text: String(stats.blocked.length) }), h('span', { text: '拦截的请求 / 脚本：' + catText })),
-        h('div', { class: 'stat' }, h('b', { text: stats.spriteNodesRemoved ? `-${stats.spriteNodesRemoved}` : '0' }), h('span', { text: stats.spriteSymbols ? `DOM 节点（雪碧图 ${stats.spriteSymbols} 个 symbol，暂存 ${stats.spritePruned}，按需放回 ${stats.spriteRestored}）` : 'DOM 节点（雪碧图未处理）' })),
+        h('div', { class: 'stat' }, h('b', { text: String(stats.blocked.length) }), h('span', { text: '拦截项（按 URL 去重）：' + catText })),
+        h('div', { class: 'stat' }, h('b', { text: stats.spriteNodesRemoved ? `-${stats.spriteNodesRemoved}` : '0' }), h('span', { text: stats.spriteSymbols ? `当前净减少 DOM 节点（雪碧图 ${stats.spriteSymbols} 个 symbol，暂存 ${stats.spritePruned}，按需放回 ${stats.spriteRestored}）` : 'DOM 节点（雪碧图未处理）' })),
         h('div', { class: 'stat' }, h('b', { text: `${Math.round(stats.longTaskMs)}ms` }), h('span', { text: `主线程长任务 ${stats.longTasks} 个（>50ms，含页面自身加载）` })),
         h('div', { class: 'stat' }, h('b', { text: String(stats.prExpanded) }), h('span', { text: 'PR 折叠块已自动点开' })));
       body.appendChild(grid);
@@ -757,8 +1224,8 @@
     const ID = 'gitcode-enhance-header-btn';
     addStyle(`
       #${ID} { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin-right: 8px;
-        border: 0; border-radius: 6px; background: transparent; color: #59636e; cursor: pointer; }
-      #${ID}:hover { background: #f6f8fa; color: #1f2328; }
+        border: 0; border-radius: 6px; background: transparent; color: var(--theme-text, #59636e); cursor: pointer; }
+      #${ID}:hover { background: var(--ui-bg, #f6f8fa); color: var(--theme-text, #1f2328); }
       #${ID} svg { width: 18px; height: 18px; }
     `);
     let tries = 0;
@@ -780,6 +1247,29 @@
   }
   installHeaderButton();
 
+  // 挂在 body 下的独立入口，不依赖站点顶栏，也不参与 Vue 管理的 DOM。
+  function installFloatingSettings() {
+    if (!document.body || document.getElementById('gce-floating-settings')) return;
+    const host = document.createElement('div'); host.id = 'gce-floating-settings';
+    const root = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = `
+      :host { position:fixed; ${floatingStyle(settings.ui.floatingPosition, 'right-middle')} z-index:1001; display:flex; flex-direction:column; gap:8px; }
+      button { display:flex; align-items:center; gap:6px; padding:10px 12px; border-radius:22px;
+        border:1px solid var(--ui-border,#d1d9e0); background:var(--theme-default-ui-bg,#fff);
+        color:var(--theme-text,#1f2328); font:13px system-ui,sans-serif; cursor:pointer;
+        box-shadow:0 2px 8px #0002; }
+      button:hover { border-color:#0969da; } button:focus-visible { outline:2px solid #0969da; outline-offset:3px; }
+    `;
+    const button = document.createElement('button'); button.type = 'button';
+    button.textContent = '⚙ 设置'; button.title = 'GitCode Enhance 设置 (Alt+G)';
+    button.setAttribute('aria-label', '悬浮设置：GitCode Enhance');
+    button.addEventListener('click', openPanel);
+    const top = document.createElement('button'); top.type = 'button'; top.textContent = '↑ 顶部';
+    top.setAttribute('aria-label', '回到页面顶部'); top.title = '回到页面顶部'; top.addEventListener('click', backToTop);
+    root.append(style, button, top); document.body.appendChild(host);
+  }
+
   // =====================================================================
   // 启动
   // =====================================================================
@@ -793,21 +1283,36 @@
   }
 
   installNetworkBlocking();
-  if (settings.perf.pruneIconSprite) installIconSpritePruner();
+  if (settings.perf.pruneIconSprite) afterPageReady(installIconSpritePruner);
   applyStyles();
+  addStyle(`
+    html:has(#gce-review-tools[data-focus="true"]) .merge-head-title-wrap { display:none !important; }
+    html:has(#gce-review-tools[data-focus="true"]) .detail-main { padding-top:0 !important; }
+    html:has(#gce-review-tools[data-focus="true"]) .merge-detail-tabs-anchor { margin-top:0 !important; }
+    html:has(#gce-review-tools) .dfd-file { scroll-margin-top:220px; }
+  `);
   log(`v${VERSION} 已启动，性能档位：${settings.perf.level}`, JSON.stringify(settings));
   debug('started', document.readyState + ' level=' + settings.perf.level + ' prune=' + settings.perf.pruneIconSprite + ' unsafeWindow=' + (typeof unsafeWindow !== 'undefined'));
 
   // SPA 路由处理：gitcode 是客户端路由，切换 PR 不会整页刷新
   let lastPath = '';
+  let cancelRouteWork = () => {};
   function onRouteChange() {
+    installFloatingSettings();
     const path = location.pathname;
-    if (path === lastPath) return;
-    lastPath = path;
+    const routeKey = path + location.search;
+    if (routeKey === lastPath) return;
+    lastPath = routeKey;
+    cancelRouteWork(); stopDeclutter(); stopReviewTools(); cancelPRExpansion();
+    closeDiffSearch();
+    diffSearchCache = null;
     const target = dashboardRedirectTarget(path);
     if (target) { location.replace(target); return; }
-    declutter();
-    if (settings.pr.autoExpand && PR_PAGE_RE.test(path)) autoExpandPRComments();
+    cancelRouteWork = afterPageReady(() => {
+      if (location.pathname + location.search !== routeKey) return;
+      declutter(); installReviewTools();
+      if (settings.pr.autoExpand && PR_PAGE_RE.test(path)) autoExpandPRComments();
+    });
   }
   onRouteChange();
   setInterval(onRouteChange, 1000);

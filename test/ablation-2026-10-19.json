@@ -1,0 +1,82 @@
+[
+  {
+    "mode": "baseline",
+    "fcp": 2916,
+    "ttfb": 1745.6000000238419,
+    "long": 2111,
+    "rows": 1059,
+    "nodes": 14554,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "prune",
+    "fcp": 5308,
+    "ttfb": 1867.2000000476837,
+    "long": 2825,
+    "rows": 1059,
+    "nodes": 18798,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "review",
+    "fcp": 4208,
+    "ttfb": 1475.7000000476837,
+    "long": 3070,
+    "rows": 1059,
+    "nodes": 14616,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "theme",
+    "fcp": 2188,
+    "ttfb": 1603.9000000953674,
+    "long": 2244,
+    "rows": 1059,
+    "nodes": 14626,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "network",
+    "fcp": 2288,
+    "ttfb": 1647.3000000715256,
+    "long": 2172,
+    "rows": 1059,
+    "nodes": 14631,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "declutter",
+    "fcp": 2136,
+    "ttfb": 1668.3999999761581,
+    "long": 2523,
+    "rows": 1059,
+    "nodes": 14627,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "v030",
+    "fcp": 5428,
+    "ttfb": 1417,
+    "long": 1061,
+    "rows": 1059,
+    "nodes": 14613,
+    "scroll": 0,
+    "visibility": "visible"
+  },
+  {
+    "mode": "v030",
+    "fcp": 1716,
+    "ttfb": 1249.8999999761581,
+    "long": 2822,
+    "rows": 1059,
+    "nodes": 14627,
+    "scroll": 0,
+    "visibility": "visible"
+  }
+]

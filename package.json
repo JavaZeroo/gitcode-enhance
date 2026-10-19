@@ -1,11 +1,12 @@
 {
   "name": "gitcode-enhance",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "Tampermonkey userscript that enhances gitcode.com (AtomGit): ad removal, GitHub-style skin, performance mode, and PR comment auto-expand.",
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "test": "node --test"
   },
   "license": "MIT"
 }
