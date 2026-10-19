@@ -376,7 +376,8 @@
 
   // =====================================================================
   // DOM 层：图标雪碧图裁剪
-  // gitcode 用 iconfont 的 symbol 方案：两个 JS（合计 1.5MB）在 DOMContentLoaded 时往 body 开头
+  // 早期采样中 gitcode 使用 iconfont symbol；以下数量和时长仅是历史样本，不代表全站提速。
+  // 两个 JS（合计 1.5MB）在 DOMContentLoaded 时往 body 开头
   // 塞一个含 1389 个 <symbol> 的 <svg>，共 4172 个 DOM 节点，占仓库页全部节点的 68%，
   // 而一个页面实际用到的图标只有 45～50 个。实测把没用的 symbol 摘掉后，
   // 整页样式重算耗时从 87ms 降到 29ms（仓库页）/ 127ms 降到 63ms（展开 363 条评论的 PR 页）。
@@ -657,6 +658,7 @@
     return { rows, complete: valid && inHunk && oldLeft === 0 && newLeft === 0 };
   }
 
+  // v0.3.1 only indexes supplied data. Deferred loading and cache refresh are planned in ROADMAP.md (S1/S2).
   function indexDiffSnapshot(snapshot) {
     let incomplete = Math.max(0, snapshot.total - snapshot.files.length), binary = 0, empty = 0;
     const issues = incomplete ? [`${incomplete} 个文件未返回`] : [];
