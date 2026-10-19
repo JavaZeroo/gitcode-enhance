@@ -34,7 +34,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, textMatchOffsets, floatingStyle, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, textMatchOffsets, floatingStyle, indexDiffSnapshot, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) { button = value; },
@@ -188,4 +188,22 @@ test('route cancellation removes pending load listener', () => {
   h.context.removeEventListener = (name, fn) => { if (listener === fn) listener = null; };
   const cancel = h.api.afterPageReady(() => ran++);
   assert.equal(typeof listener, 'function'); cancel(); assert.equal(listener, null); h.flush(); assert.equal(ran, 0);
+});
+
+
+test('coverage distinguishes empty files from deferred and truncated diffs', () => {
+  const { indexDiffSnapshot } = harness().api;
+  const result = indexDiffSnapshot({total: 3, files: [
+    {path: 'empty.py', diff: '', isEmpty: true, addedLines: 0, removedLines: 0},
+    {path: 'lazy.py', diff: '', collapsed: true},
+    {path: 'code.py', diff: '@@ -0,0 +1 @@\n+needle\n'},
+  ]});
+  assert.equal(result.empty, 1);
+  assert.equal(result.indexed.length, 1);
+  assert.equal(result.incomplete, 1);
+  assert.match(result.issues.join(' '), /lazy.py.*尚未加载/);
+  const truncated = indexDiffSnapshot({total: 1, files: [{path:'bad.py',diff:'@@ -0,0 +1,2 @@\n+one\n'}]});
+  assert.equal(truncated.incomplete, 1);
+  const ambiguous = indexDiffSnapshot({total: 1, files: [{path:'unknown.py',diff:''}]});
+  assert.equal(ambiguous.incomplete, 1);
 });

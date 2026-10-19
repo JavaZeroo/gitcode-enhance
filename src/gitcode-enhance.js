@@ -12,7 +12,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.0';
+  const VERSION = '0.3.1';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -84,7 +84,7 @@
     pr: { autoExpand: true, reviewTools: true },
     // /dashboard 默认是 AI Agent 聊天页，打开 gitcode.com 也会跳到这里。改成落到工作台的某个真实页面。
     dashboard: { home: 'latest-activity' },
-    ui: { headerButton: true, floatingPosition: 'right-middle', reviewPosition: 'right-bottom', searchPosition: 'right-top' },
+    ui: { headerButton: true, floatingPosition: 'left-bottom', reviewPosition: 'right-bottom', searchPosition: 'right-top' },
     perf: { level: 'light', ...PERF_PRESETS.light },
   };
 
@@ -604,7 +604,8 @@
       return {
         path: value(f.filePath) || value(f.newPath) || value(f.oldPath),
         diff: value(f.diff), binary: !!value(f.binary), tooLarge: !!value(f.tooLarge),
-        collapsed: !!value(f.collapsed),
+        collapsed: !!value(f.collapsed), isEmpty: !!value(f.isEmpty),
+        addedLines: value(f.addedLines), removedLines: value(f.removedLines),
       };
     });
     const total = Number(value(record.changesCount));
@@ -633,6 +634,25 @@
       if (oldLeft < 0 || newLeft < 0) valid = false;
     }
     return { rows, complete: valid && inHunk && oldLeft === 0 && newLeft === 0 };
+  }
+
+  function indexDiffSnapshot(snapshot) {
+    let incomplete = Math.max(0, snapshot.total - snapshot.files.length), binary = 0, empty = 0;
+    const issues = incomplete ? [`${incomplete} 个文件未返回`] : [];
+    const indexed = snapshot.files.flatMap(file => {
+      if (file.binary) { binary++; return []; }
+      // Only explicit empty-file metadata with zero changes proves there is no text to index.
+      if (file.isEmpty && file.addedLines === 0 && file.removedLines === 0 && !file.diff && !file.tooLarge) { empty++; return []; }
+      if (typeof file.diff !== 'string' || !file.diff) {
+        incomplete++;
+        issues.push(`${file.path}（${file.collapsed ? '站点尚未加载差异' : '未返回文本差异'}）`);
+        return [];
+      }
+      const parsed = parseDiffLines(file.diff);
+      if (!parsed.complete || file.tooLarge) { incomplete++; issues.push(`${file.path}（差异被截断或不完整）`); }
+      return [{ ...file, rows: parsed.rows.map(row => ({ ...row, lowerText: row.text.toLowerCase() })) }];
+    });
+    return { indexed, incomplete, binary, empty, issues };
   }
 
   function searchDiffRows(files, needle, caseSensitive = false, changesOnly = false) {
@@ -814,15 +834,9 @@
           if (!data) throw new Error('页面没有提供差异数据，请确认登录状态后重试');
           snapshot = readDiffSnapshot(data.textContent, path);
         }
-        let incomplete = Math.max(0, snapshot.total - snapshot.files.length), binary = 0;
-        indexed = snapshot.files.flatMap(file => {
-          if (file.binary) { binary++; return []; }
-          if (typeof file.diff !== 'string' || !file.diff) { incomplete++; return []; }
-          const parsed = parseDiffLines(file.diff);
-          if (!parsed.complete || file.tooLarge) incomplete++;
-          return [{ ...file, rows: parsed.rows.map(row => ({ ...row, lowerText: row.text.toLowerCase() })) }];
-        });
-        coverage.textContent = `已索引 ${indexed.length}/${snapshot.total} 个文件 · 提交 ${snapshot.commit.slice(0, 8) || '未知'}${binary ? ` · ${binary} 个二进制文件不支持文本搜索` : ''}${incomplete ? ` · ${incomplete} 个文件缺失或差异不完整，搜索可能遗漏` : ' · 已覆盖服务器提供的全部文本 diff'}`;
+        const result = indexDiffSnapshot(snapshot);
+        indexed = result.indexed;
+        coverage.textContent = `已索引 ${indexed.length}/${snapshot.total} 个文件 · 提交 ${snapshot.commit.slice(0, 8) || '未知'}${result.empty ? ` · ${result.empty} 个空文件无需文本搜索` : ''}${result.binary ? ` · ${result.binary} 个二进制文件不支持文本搜索` : ''}${result.incomplete ? ` · ${result.incomplete} 个文件未完整索引：${result.issues.join('；')}，搜索可能遗漏` : ' · 已覆盖服务器提供的全部文本 diff'}`;
         diffSearchCache = { key: cacheKey, snapshot, indexed, coverage: coverage.textContent };
         search(true);
       } catch (error) { if (!disposed) { coverage.textContent = error.message; summary.textContent = '未能建立索引，请关闭后重试。'; } }
@@ -937,13 +951,13 @@
         current = document.createElement('span'); current.className = 'current';
         const heading = document.createElement('div'); heading.className = 'heading';
         const label = document.createElement('strong'); label.textContent = '正在阅读';
-        const details = document.createElement('div'); details.className = 'details'; details.id = 'review-details';
-        const collapse = button('收起工具', () => {
+        const details = document.createElement('div'); details.className = 'details'; details.id = 'review-details'; details.hidden = true;
+        const collapse = button('展开工具', () => {
           details.hidden = !details.hidden;
           collapse.textContent = details.hidden ? '展开工具' : '收起工具';
           collapse.setAttribute('aria-expanded', String(!details.hidden));
         });
-        collapse.setAttribute('aria-expanded', 'true'); collapse.setAttribute('aria-controls', details.id);
+        collapse.setAttribute('aria-expanded', 'false'); collapse.setAttribute('aria-controls', details.id);
         feedback = document.createElement('span'); feedback.className = 'feedback'; feedback.setAttribute('role', 'status');
         const copy = button('复制当前路径', async () => {
           if (!visibleFile) return;
@@ -1231,7 +1245,7 @@
     const root = host.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
     style.textContent = `
-      :host { position:fixed; ${floatingStyle(settings.ui.floatingPosition, 'right-middle')} z-index:1001; display:flex; flex-direction:column; gap:8px; }
+      :host { position:fixed; ${floatingStyle(settings.ui.floatingPosition, 'left-bottom')} z-index:1001; display:flex; flex-direction:column; gap:8px; }
       button { display:flex; align-items:center; gap:6px; padding:10px 12px; border-radius:22px;
         border:1px solid var(--ui-border,#d1d9e0); background:var(--theme-default-ui-bg,#fff);
         color:var(--theme-text,#1f2328); font:13px system-ui,sans-serif; cursor:pointer;
