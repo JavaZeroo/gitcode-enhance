@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.1
+// @version      0.3.2
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -33,7 +33,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.1';
+  const VERSION = '0.3.2';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -689,16 +689,43 @@
     return hits;
   }
 
+  function prioritizeDiffFiles(files, currentPath) {
+    const index = files.findIndex(file => file.path === currentPath);
+    return index > 0 ? files.slice(index).concat(files.slice(0, index)) : files;
+  }
+
+  function currentDiffPath() {
+    const files = Array.from(document.querySelectorAll('.dfd-file[id]'));
+    const current = files.find(file => file.getBoundingClientRect().bottom > 221);
+    return current?.id.replace(/^mr_/, '') || '';
+  }
+
+  async function indexDiffSnapshotAsync(snapshot, cancelled, yieldTask = () => new Promise(resolve => setTimeout(resolve, 0))) {
+    const result = { indexed: [], incomplete: Math.max(0, snapshot.total - snapshot.files.length), binary: 0, empty: 0, issues: [] };
+    if (result.incomplete) result.issues.push(`${result.incomplete} 个文件未返回`);
+    for (let i = 0; i < snapshot.files.length; i++) {
+      if (cancelled()) return null;
+      const part = indexDiffSnapshot({ total: 1, files: [snapshot.files[i]] });
+      result.indexed.push(...part.indexed); result.issues.push(...part.issues);
+      result.incomplete += part.incomplete; result.binary += part.binary; result.empty += part.empty;
+      if (i % 4 === 3) await yieldTask();
+    }
+    return cancelled() ? null : result;
+  }
+
   let closeDiffSearch = () => {};
+  let refocusDiffSearch = () => {};
   let diffSearchCache = null;
   function openDiffSearch() {
     const existing = document.getElementById('gce-diff-search');
-    if (existing) { const input = existing.shadowRoot.querySelector('input[type=search]'); input.focus(); input.select(); return; }
+    if (existing) { refocusDiffSearch(); return; }
     closeDiffSearch();
     const url = location.href, path = location.pathname;
+    let originPath = currentDiffPath();
     const host = document.createElement('div'); host.id = 'gce-diff-search';
     const root = host.attachShadow({ mode: 'open' });
     const controller = new W.AbortController();
+    let ready = false, searching = false, pendingMove = 0;
     let disposed = false, indexed = [], snapshot = null, hits = [], jumpTimer = null, active = -1, searchTimer = null, searchGeneration = 0, highlighted = null;
     const el = (tag, text) => { const n = document.createElement(tag); if (text) n.textContent = text; return n; };
     const style = el('style'); style.textContent = `
@@ -729,7 +756,7 @@
     previous.addEventListener('click', () => move(-1)); next.addEventListener('click', () => move(1));
     input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); move(event.shiftKey ? -1 : 1); } });
     controls.append(input, previous, next, caseLabel, changeLabel);
-    const coverage = el('div', '正在读取完整差异数据…'); coverage.className = 'info';
+    const coverage = el('div', '正在准备差异索引，可先输入关键词…'); coverage.className = 'info';
     const summary = el('div'); summary.setAttribute('role', 'status');
     const results = el('div'); results.className = 'results';
     const hint = el('div', '搜索 diff 中的新增、删除及上下文行，不包括未改动的完整文件。Enter 下一处，Shift+Enter 上一处，Esc 关闭。'); hint.className = 'info';
@@ -784,6 +811,7 @@
       locate();
     }
     function move(direction) {
+      if (!ready || searching) { pendingMove = direction; summary.textContent = '正在准备结果，完成后自动跳转…'; return; }
       if (!hits.length) return;
       active = active < 0 ? (direction > 0 ? 0 : hits.length - 1) : (active + direction + hits.length) % hits.length;
       render(); jump(hits[active]);
@@ -791,7 +819,7 @@
     function render() {
       previous.disabled = next.disabled = !hits.length;
       results.replaceChildren();
-      summary.textContent = input.value ? `${active < 0 ? 0 : active + 1} / ${hits.length} 条匹配行` : '输入关键词开始搜索';
+      summary.textContent = input.value ? `${active < 0 ? 0 : active + 1} / ${hits.length} 条匹配行` : '输入关键词开始搜索（优先当前文件）';
       const needle = input.value;
       for (const hit of (active < 0 ? hits.slice(0, 3) : [hits[active]])) {
         const item = el('button'); item.type = 'button'; item.className = 'hit';
@@ -807,36 +835,44 @@
     function search(immediate = false) {
       clearTimeout(searchTimer); clearTimeout(jumpTimer); clearHighlight();
       const generation = ++searchGeneration;
-      active = -1; hits = []; render();
+      active = -1; hits = []; searching = false; render();
       const needle = sensitive.checked ? input.value : input.value.toLowerCase();
-      if (!needle) return;
+      if (!needle) { pendingMove = 0; return; }
+      if (!ready) { summary.textContent = '正在准备索引，完成后自动搜索当前关键词…'; return; }
+      searching = true;
       previous.disabled = next.disabled = true;
       summary.textContent = '正在查找…';
+      const ordered = prioritizeDiffFiles(indexed, originPath);
       let fileIndex = 0, rowIndex = 0;
       const found = [];
       function step() {
         if (disposed || generation !== searchGeneration) return;
         let budget = 1000;
-        while (fileIndex < indexed.length && budget-- > 0) {
-          const file = indexed[fileIndex], row = file.rows[rowIndex++];
+        while (fileIndex < ordered.length && budget-- > 0) {
+          const file = ordered[fileIndex], row = file.rows[rowIndex++];
           if (!row) { fileIndex++; rowIndex = 0; continue; }
           if ((!changes.checked || row.kind !== ' ') && (sensitive.checked ? row.text : row.lowerText).includes(needle)) found.push({ file, row });
         }
-        if (fileIndex < indexed.length) searchTimer = setTimeout(step, 0);
-        else { hits = found; render(); }
+        if (fileIndex < ordered.length) searchTimer = setTimeout(step, 0);
+        else { hits = found; searching = false; render(); if (pendingMove) { const direction = pendingMove; pendingMove = 0; move(direction); } }
       }
       searchTimer = setTimeout(step, immediate ? 0 : 100);
     }
-    input.addEventListener('input', () => search()); sensitive.addEventListener('change', () => search(true)); changes.addEventListener('change', () => search(true));
+    input.addEventListener('input', () => { pendingMove = 0; search(); }); sensitive.addEventListener('change', () => { pendingMove = 0; search(true); }); changes.addEventListener('change', () => { pendingMove = 0; search(true); });
+    refocusDiffSearch = () => { originPath = currentDiffPath(); pendingMove = 0; input.focus(); input.select(); search(true); };
     input.focus();
     (async () => {
       try {
+        // Let the focused search input paint before parsing the page snapshot.
+        await new Promise(resolve => W.requestAnimationFrame(() => setTimeout(resolve, 0)));
+        if (disposed) return;
         const payload = document.getElementById('__NUXT_DATA__');
         const currentCommit = document.querySelector('.dfd-path-new[href*="/blob/"]')?.getAttribute('href')?.split('/blob/')[1]?.split('/')[0];
         const cacheKey = url + ':' + currentCommit;
         if (diffSearchCache?.key === cacheKey) {
           ({ snapshot, indexed } = diffSearchCache);
           coverage.textContent = diffSearchCache.coverage;
+          ready = true;
           search(true); return;
         }
         // 默认比较直接复用本页数据；SPA 残留或自定义比较则重新读取当前 URL。
@@ -847,6 +883,7 @@
           } catch { /* SPA 的初始数据可能属于另一页 */ }
         }
         if (!snapshot) {
+          coverage.textContent = '正在读取当前 PR 差异（站内跳转后的首次搜索可能需要等待）…';
           const response = await W.fetch(url, { credentials: 'same-origin', signal: controller.signal });
           if (!response.ok) throw new Error(`读取失败（HTTP ${response.status}）`);
           const html = await response.text();
@@ -857,7 +894,10 @@
           if (!data) throw new Error('页面没有提供差异数据，请确认登录状态后重试');
           snapshot = readDiffSnapshot(data.textContent, path);
         }
-        const result = indexDiffSnapshot(snapshot);
+        coverage.textContent = '正在分批建立差异索引…';
+        const result = await indexDiffSnapshotAsync(snapshot, () => disposed || location.href !== url);
+        if (!result) return;
+        ready = true;
         indexed = result.indexed;
         coverage.textContent = `已索引 ${indexed.length}/${snapshot.total} 个文件 · 提交 ${snapshot.commit.slice(0, 8) || '未知'}${result.empty ? ` · ${result.empty} 个空文件无需文本搜索` : ''}${result.binary ? ` · ${result.binary} 个二进制文件不支持文本搜索` : ''}${result.incomplete ? ` · ${result.incomplete} 个文件未完整索引：${result.issues.join('；')}，搜索可能遗漏` : ' · 已覆盖服务器提供的全部文本 diff'}`;
         diffSearchCache = { key: cacheKey, snapshot, indexed, coverage: coverage.textContent };

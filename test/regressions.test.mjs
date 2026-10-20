@@ -34,7 +34,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, textMatchOffsets, floatingStyle, indexDiffSnapshot, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, textMatchOffsets, floatingStyle, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) { button = value; },
@@ -206,4 +206,25 @@ test('coverage distinguishes empty files from deferred and truncated diffs', () 
   assert.equal(truncated.incomplete, 1);
   const ambiguous = indexDiffSnapshot({total: 1, files: [{path:'unknown.py',diff:''}]});
   assert.equal(ambiguous.incomplete, 1);
+});
+
+
+test('search starts at the current file and wraps without changing the shared index', () => {
+  const { prioritizeDiffFiles, searchDiffRows } = harness().api;
+  const files = ['a','b','c'].map(path => ({path,rows:[{kind:'+',text:'needle',newLine:1}]}));
+  assert.equal(searchDiffRows(prioritizeDiffFiles(files,'b'),'needle').map(h=>h.file.path).join(','),'b,c,a');
+  assert.equal(files.map(f=>f.path).join(','),'a,b,c');
+  assert.equal(prioritizeDiffFiles(files,'absent'),files);
+  assert.equal(prioritizeDiffFiles([], 'b').length,0);
+});
+
+test('incremental indexing yields and stops after cancellation', async () => {
+  const { indexDiffSnapshotAsync, indexDiffSnapshot } = harness().api;
+  const snapshot = {total:9,files:Array.from({length:9},(_,i)=>({path:String(i),diff:'@@ -0,0 +1 @@\n+needle\n'}))};
+  let yields=0;
+  const result=await indexDiffSnapshotAsync(snapshot,()=>false,async()=>{yields++;});
+  assert.equal(yields,2);
+  assert.equal(JSON.stringify(result),JSON.stringify(indexDiffSnapshot(snapshot)));
+  let cancelled=false;
+  assert.equal(await indexDiffSnapshotAsync(snapshot,()=>cancelled,async()=>{cancelled=true;}),null);
 });
