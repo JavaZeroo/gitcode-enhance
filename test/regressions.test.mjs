@@ -34,7 +34,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, textMatchOffsets, floatingStyle, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) { button = value; },
@@ -227,4 +227,25 @@ test('incremental indexing yields and stops after cancellation', async () => {
   assert.equal(JSON.stringify(result),JSON.stringify(indexDiffSnapshot(snapshot)));
   let cancelled=false;
   assert.equal(await indexDiffSnapshotAsync(snapshot,()=>cancelled,async()=>{cancelled=true;}),null);
+});
+
+ test('highlight ranges cover every occurrence across syntax token boundaries', () => {
+  const {api,context}=harness();
+  const nodes=['to','rch torch',' TORCH'].map(textContent=>({textContent}));
+  context.document.createTreeWalker=()=>{let i=0;return {nextNode:()=>nodes[i++]};};
+  context.document.createRange=()=>({setStart(node,offset){this.start=[nodes.indexOf(node),offset];},setEnd(node,offset){this.end=[nodes.indexOf(node),offset];}});
+  const ranges=api.codeTextRanges({},'torch',false);
+  assert.equal(ranges.length,3);
+  assert.deepEqual(ranges.map(r=>r.start).flat().join(','),'0,0,1,4,2,1');
+  assert.equal(ranges[0].end.join(','),'1,3');
+  assert.equal(api.codeTextRanges({},'torch',true).length,2);
+  assert.equal(api.codeTextRanges({},'',false).length,0);
+});
+ test('global highlight lookup respects matched files and both diff sides', () => {
+  const {hitLineLookup}=harness().api;
+  const hits=[{file:{path:'a'},row:{kind:'-',oldLine:2,newLine:null}},{file:{path:'a'},row:{kind:'+',oldLine:null,newLine:4}},{file:{path:'b'},row:{kind:' ',oldLine:8,newLine:9}}];
+  const lookup=hitLineLookup(hits);
+  assert.equal([...lookup.get('a')].join(','),'old:2,new:4');
+  assert.equal([...lookup.get('b')].join(','),'old:8,new:9');
+  assert.equal(hitLineLookup([]).size,0);
 });

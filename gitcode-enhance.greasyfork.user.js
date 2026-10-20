@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.2
+// @version      0.3.3
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -33,7 +33,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.2';
+  const VERSION = '0.3.3';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -72,8 +72,8 @@
     return offsets;
   }
 
-  function highlightCodeText(code, needle, sensitive) {
-    if (!code || !W.CSS?.highlights || !W.Highlight) return;
+  function codeTextRanges(code, needle, sensitive) {
+    if (!code) return [];
     const walker = document.createTreeWalker(code, 4), nodes = [];
     let text = '', node;
     while ((node = walker.nextNode())) { nodes.push({ node, start: text.length, end: text.length + node.textContent.length }); text += node.textContent; }
@@ -81,8 +81,25 @@
       const a = nodes.find(n => n.end > start), b = nodes.find(n => n.end >= end);
       const range = document.createRange(); range.setStart(a.node, start - a.start); range.setEnd(b.node, end - b.start); return range;
     });
+    return ranges;
+  }
+
+  function highlightCodeText(code, needle, sensitive) {
+    if (!W.CSS?.highlights || !W.Highlight) return;
+    const ranges = codeTextRanges(code, needle, sensitive);
     W.CSS.highlights.set('gce-keyword', new W.Highlight(...ranges));
     return ranges[0];
+  }
+
+  function hitLineLookup(hits) {
+    const files = new Map();
+    for (const { file, row } of hits) {
+      if (!files.has(file.path)) files.set(file.path, new Set());
+      const lines = files.get(file.path);
+      if (row.kind !== '+') lines.add('old:' + row.oldLine);
+      if (row.kind !== '-') lines.add('new:' + row.newLine);
+    }
+    return files;
   }
 
   // =====================================================================
@@ -476,7 +493,8 @@
       .gce-search-hit { outline:3px solid #ffbf00 !important; outline-offset:-3px; }
       .gce-search-hit > td { background-color:rgba(255,191,0,.2) !important; }
       .gce-search-cell { box-shadow:inset 5px 0 #ffbf00 !important; }
-      ::highlight(gce-keyword) { background-color:#ffe031; color:#171717; text-decoration:underline; }
+      ::highlight(gce-matches) { background-color:#ffe031; color:#171717; }
+      ::highlight(gce-keyword) { background-color:#ff9f1a; color:#171717; text-decoration:underline; }
     `);
     const rules = [];
     const ab = settings.adblock;
@@ -766,8 +784,59 @@
       highlighted?.querySelectorAll('.gce-search-cell').forEach(cell => cell.classList.remove('gce-search-cell'));
       W.CSS?.highlights?.delete('gce-keyword'); highlighted = null;
     }
+    let highlightTimer = null, matchLines = new Map();
+    const fileRanges = new Map(), dirtyFiles = new Set();
+    const diffMain = document.querySelector('.dfd-main');
+    function refreshMatches() {
+      highlightTimer = null;
+      if (disposed || !W.CSS?.highlights || !W.Highlight) return;
+      for (const file of fileRanges.keys()) if (!file.isConnected) fileRanges.delete(file);
+      for (const file of dirtyFiles) {
+        fileRanges.delete(file);
+        const lines = matchLines.get(file.id.slice(3));
+        if (!file.isConnected || !lines) continue;
+        const blob = file.querySelector('.dfd-path-new')?.getAttribute('href') || '';
+        if (snapshot?.commit && blob.includes('/blob/') && !blob.includes('/blob/' + snapshot.commit + '/')) continue;
+        const ranges = [], seen = new Set();
+        for (const row of file.querySelectorAll('[data-old-line], [data-new-line]')) {
+          const cells = row.querySelectorAll('.dft-code-ctn');
+          for (const side of ['old', 'new']) {
+            if (!lines.has(side + ':' + row.getAttribute('data-' + side + '-line'))) continue;
+            const code = cells.length > 1 ? cells[side === 'old' ? 0 : cells.length - 1] : cells[0];
+            if (!code || seen.has(code)) continue;
+            seen.add(code);
+            ranges.push(...codeTextRanges(code, input.value, sensitive.checked));
+          }
+        }
+        fileRanges.set(file, ranges);
+      }
+      dirtyFiles.clear();
+      const highlight = new W.Highlight();
+      for (const ranges of fileRanges.values()) for (const range of ranges) highlight.add(range);
+      W.CSS.highlights.set('gce-matches', highlight);
+    }
+    const matchObserver = new MutationObserver(records => {
+      if (!matchLines.size) return;
+      for (const record of records) {
+        const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        const file = target?.closest('.dfd-file');
+        if (file) dirtyFiles.add(file);
+        for (const node of record.addedNodes || []) {
+          if (node.nodeType !== 1) continue;
+          if (node.matches('.dfd-file')) dirtyFiles.add(node);
+          node.querySelectorAll('.dfd-file').forEach(file => dirtyFiles.add(file));
+        }
+      }
+      if (highlightTimer === null) highlightTimer = setTimeout(refreshMatches, 100);
+    });
+    if (diffMain) matchObserver.observe(diffMain, { childList: true, subtree: true, characterData: true });
+    function clearMatches() {
+      clearTimeout(highlightTimer); highlightTimer = null;
+      matchLines.clear(); fileRanges.clear(); dirtyFiles.clear();
+      W.CSS?.highlights?.delete('gce-matches');
+    }
     function dismiss() { host.remove(); }
-    function cleanup() { disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++; clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true); }
+    function cleanup() { disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++; matchObserver.disconnect(); clearMatches(); clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true); }
     closeDiffSearch = cleanup;
     function escape(event) { if (event.key === 'Escape') { event.stopPropagation(); cleanup(); } }
     document.addEventListener('keydown', escape, true); close.addEventListener('click', cleanup);
@@ -833,7 +902,7 @@
       }
     }
     function search(immediate = false) {
-      clearTimeout(searchTimer); clearTimeout(jumpTimer); clearHighlight();
+      clearTimeout(searchTimer); clearTimeout(jumpTimer); clearHighlight(); clearMatches();
       const generation = ++searchGeneration;
       active = -1; hits = []; searching = false; render();
       const needle = sensitive.checked ? input.value : input.value.toLowerCase();
@@ -854,7 +923,13 @@
           if ((!changes.checked || row.kind !== ' ') && (sensitive.checked ? row.text : row.lowerText).includes(needle)) found.push({ file, row });
         }
         if (fileIndex < ordered.length) searchTimer = setTimeout(step, 0);
-        else { hits = found; searching = false; render(); if (pendingMove) { const direction = pendingMove; pendingMove = 0; move(direction); } }
+        else {
+          hits = found; searching = false; render();
+          matchLines = hitLineLookup(hits);
+          diffMain?.querySelectorAll('.dfd-file').forEach(file => dirtyFiles.add(file));
+          refreshMatches();
+          if (pendingMove) { const direction = pendingMove; pendingMove = 0; move(direction); }
+        }
       }
       searchTimer = setTimeout(step, immediate ? 0 : 100);
     }
