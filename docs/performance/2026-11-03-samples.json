@@ -1,0 +1,27 @@
+{
+  "note": "Single uncontrolled existing-navigation vs reload samples; not a causal speed or memory comparison. Heap includes site JS and GC timing varies.",
+  "beforePr": {
+    "result": {
+      "type": "string",
+      "value": "{\"url\":\"/Ascend/torchtitan-ascend/pull/97/diffs\",\"nav\":[{\"ttfb\":1203.5,\"dcl\":3003.0999999046326,\"load\":3433.899999976158}],\"paint\":[{\"name\":\"first-paint\",\"t\":2560},{\"name\":\"first-contentful-paint\",\"t\":2560}],\"nodes\":4824,\"heap\":83229462,\"debug\":[[\"data-gce-longtask-observer\",\"ok:page\"],[\"data-gce-late-scripts\",\"3\"],[\"data-gce-started\",\"loading level=aggressive prune=true unsafeWindow=true\"],[\"data-gce-longtasks\",\"16:2504\"],[\"data-gce-captcha-executed\",\"true\"],[\"data-gce-pruned\",\"1797->51 nodes-5291\"]]}"
+    }
+  },
+  "afterPr": {
+    "result": {
+      "type": "string",
+      "value": "{\"url\":\"/Ascend/torchtitan-ascend/pull/97/diffs\",\"nav\":[{\"ttfb\":1488.2000000476837,\"dcl\":3628.600000023842,\"load\":5199.399999976158}],\"paint\":[{\"name\":\"first-paint\",\"t\":2864},{\"name\":\"first-contentful-paint\",\"t\":2864}],\"nodes\":4753,\"heap\":99699258,\"debug\":[[\"data-gce-longtask-observer\",\"ok:page\"],[\"data-gce-late-scripts\",\"3\"],[\"data-gce-started\",\"loading level=aggressive prune=true unsafeWindow=true\"],[\"data-gce-longtasks\",\"17:3847\"],[\"data-gce-captcha-executed\",\"true\"],[\"data-gce-pruned\",\"1797->51 nodes-5291\"]]}"
+    }
+  },
+  "beforeHome": {
+    "result": {
+      "type": "string",
+      "value": "{\"url\":\"/\",\"nav\":[{\"ttfb\":839.2999999523163,\"dcl\":1821,\"load\":2210.2000000476837}],\"paint\":[{\"name\":\"first-paint\",\"t\":1388},{\"name\":\"first-contentful-paint\",\"t\":1388}],\"nodes\":1720,\"heap\":135097488,\"debug\":[[\"data-gce-longtask-observer\",\"ok:page\"],[\"data-gce-late-scripts\",\"3\"],[\"data-gce-started\",\"interactive level=aggressive prune=true unsafeWindow=true\"],[\"data-gce-longtasks\",\"9:1463\"],[\"data-gce-captcha-executed\",\"true\"],[\"data-gce-pruned\",\"1797->34 nodes-5334\"]]}"
+    }
+  },
+  "afterHome": {
+    "result": {
+      "type": "string",
+      "value": "{\"url\":\"/\",\"nav\":[{\"ttfb\":802.3999999761581,\"dcl\":2693.1999999284744,\"load\":2911.1999999284744}],\"paint\":[{\"name\":\"first-paint\",\"t\":2028},{\"name\":\"first-contentful-paint\",\"t\":2028}],\"nodes\":1738,\"heap\":169038042,\"debug\":[[\"data-gce-longtask-observer\",\"ok:page\"],[\"data-gce-late-scripts\",\"3\"],[\"data-gce-started\",\"loading level=aggressive prune=true unsafeWindow=true\"],[\"data-gce-longtasks\",\"12:2112\"],[\"data-gce-captcha-executed\",\"true\"],[\"data-gce-pruned\",\"1797->36 nodes-5328\"]]}"
+    }
+  }
+}

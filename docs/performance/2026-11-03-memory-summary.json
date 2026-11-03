@@ -1,0 +1,242 @@
+{
+  "date": "2026-11-03",
+  "scope": "Isolated synthetic fixture; not real GitCode or process-total memory",
+  "units": {
+    "timing": "milliseconds",
+    "heap": "bytes"
+  },
+  "baseline": {
+    "context": "Isolated synthetic SVG and expansion fixture; not real-site or process-total memory",
+    "version": "Chrome/156.0.8078.80",
+    "sourcePath": "docs/performance/memory-2026-11-03/baseline.js",
+    "sourceSha256": "602066e1ae8536fcfcc9fb2bbd0b9f6a9fb7c02c6f5c42afa0c55bfc3b41812b",
+    "built": {
+      "symbols": 1600,
+      "nodes": 4800,
+      "markupChars": 1322180
+    },
+    "empty": {
+      "heap": {
+        "usedSize": 527208,
+        "totalSize": 1310720,
+        "embedderHeapUsedSize": 294976,
+        "backingStorageSize": 76847
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 9,
+        "jsEventListeners": 2
+      }
+    },
+    "before": {
+      "heap": {
+        "usedSize": 739980,
+        "totalSize": 1310720,
+        "embedderHeapUsedSize": 4811632,
+        "backingStorageSize": 241985
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 4810,
+        "jsEventListeners": 2
+      }
+    },
+    "pruned": {
+      "heap": {
+        "usedSize": 890848,
+        "totalSize": 1835008,
+        "embedderHeapUsedSize": 4312960,
+        "backingStorageSize": 255288
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 4810,
+        "jsEventListeners": 2
+      }
+    },
+    "retainedOriginalSymbols": 1600,
+    "pruneMs": 13.799999952316284,
+    "restore": {
+      "ms": 2.8000000715255737,
+      "exact": true,
+      "width": 125,
+      "restored": 200
+    },
+    "restored": {
+      "heap": {
+        "usedSize": 895360,
+        "totalSize": 1835008,
+        "embedderHeapUsedSize": 5997720,
+        "backingStorageSize": 253798
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 5811,
+        "jsEventListeners": 2
+      }
+    },
+    "removed": {
+      "heap": {
+        "usedSize": 887304,
+        "totalSize": 1835008,
+        "embedderHeapUsedSize": 4462240,
+        "backingStorageSize": 88708
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 4810,
+        "jsEventListeners": 2
+      }
+    },
+    "retainedRemovedRoot": true,
+    "fallback": {
+      "connected": false,
+      "width": 0
+    },
+    "expansion": {
+      "first": {
+        "near": 1,
+        "far": 1,
+        "afterCancel": 0
+      },
+      "scrolled": {
+        "near": 1,
+        "far": 1,
+        "afterCancel": 0
+      },
+      "cancelled": {
+        "near": 1,
+        "far": 1,
+        "afterCancel": 0
+      }
+    },
+    "compatibility": {
+      "pruned": true,
+      "exact": true,
+      "namespaces": true,
+      "gradient": true,
+      "width": 150,
+      "firstColor": "rgb(255, 0, 0)",
+      "nextColor": "rgb(0, 0, 255)",
+      "changedNamespacedReference": false,
+      "changedReference": true
+    }
+  },
+  "optimized": {
+    "context": "Isolated synthetic SVG and expansion fixture; not real-site or process-total memory",
+    "version": "Chrome/156.0.8078.80",
+    "sourcePath": "src/gitcode-enhance.js",
+    "sourceSha256": "25716ec06cf079be4ec905714abf7c490885c72881a012729e56ed59956d7213",
+    "built": {
+      "symbols": 1600,
+      "nodes": 4800,
+      "markupChars": 1322180
+    },
+    "empty": {
+      "heap": {
+        "usedSize": 531652,
+        "totalSize": 1310720,
+        "embedderHeapUsedSize": 296064,
+        "backingStorageSize": 79545
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 9,
+        "jsEventListeners": 2
+      }
+    },
+    "before": {
+      "heap": {
+        "usedSize": 744424,
+        "totalSize": 1310720,
+        "embedderHeapUsedSize": 4812848,
+        "backingStorageSize": 244683
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 4810,
+        "jsEventListeners": 2
+      }
+    },
+    "pruned": {
+      "heap": {
+        "usedSize": 847512,
+        "totalSize": 1835008,
+        "embedderHeapUsedSize": 306384,
+        "backingStorageSize": 1415029
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 10,
+        "jsEventListeners": 2
+      }
+    },
+    "retainedOriginalSymbols": 0,
+    "pruneMs": 23.800000071525574,
+    "restore": {
+      "ms": 6.399999976158142,
+      "exact": true,
+      "width": 125,
+      "restored": 200
+    },
+    "restored": {
+      "heap": {
+        "usedSize": 852704,
+        "totalSize": 1835008,
+        "embedderHeapUsedSize": 2433232,
+        "backingStorageSize": 1413539
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 1611,
+        "jsEventListeners": 2
+      }
+    },
+    "removed": {
+      "heap": {
+        "usedSize": 838232,
+        "totalSize": 1835008,
+        "embedderHeapUsedSize": 358440,
+        "backingStorageSize": 1248449
+      },
+      "dom": {
+        "documents": 1,
+        "nodes": 9,
+        "jsEventListeners": 2
+      }
+    },
+    "retainedRemovedRoot": false,
+    "fallback": {
+      "connected": true,
+      "width": 125
+    },
+    "expansion": {
+      "first": {
+        "near": 1,
+        "far": 0,
+        "afterCancel": 0
+      },
+      "scrolled": {
+        "near": 1,
+        "far": 1,
+        "afterCancel": 0
+      },
+      "cancelled": {
+        "near": 1,
+        "far": 1,
+        "afterCancel": 0
+      }
+    },
+    "compatibility": {
+      "pruned": true,
+      "exact": true,
+      "namespaces": true,
+      "gradient": true,
+      "width": 150,
+      "firstColor": "rgb(255, 0, 0)",
+      "nextColor": "rgb(0, 0, 255)",
+      "changedNamespacedReference": false,
+      "changedReference": true
+    }
+  }
+}

@@ -6,6 +6,9 @@ import assert from 'node:assert/strict';
 const source = readFileSync(new URL('../src/gitcode-enhance.js', import.meta.url), 'utf8');
 function harness(path = '/org/repo/pull/10/discuss') {
   const timers = new Map(), observers = [], attrs = {}, uses = [];
+  const docListeners = new Map(), winListeners = new Map();
+  const listen = (map, type, fn) => { if (!map.has(type)) map.set(type, new Set()); map.get(type).add(fn); };
+  const unlisten = (map, type, fn) => { map.get(type)?.delete(fn); };
   let nextId = 0, button = null;
   class Observer {
     constructor(callback) { this.callback = callback; observers.push(this); }
@@ -21,27 +24,74 @@ function harness(path = '/org/repo/pull/10/discuss') {
     location: { pathname: path }, localStorage: { getItem() { return null; } },
     GM_getValue: () => ({ perf: { blockAnalytics: true, blockCaptcha: true } }),
     document: {
-      addEventListener() {}, body: null,
+      addEventListener(type, fn) { listen(docListeners, type, fn); },
+      removeEventListener(type, fn) { unlisten(docListeners, type, fn); }, body: null,
       documentElement: { setAttribute(k, v) { attrs[k] = v; } },
-      querySelector: () => button, querySelectorAll: () => [],
+      querySelector: () => button, querySelectorAll: selector => selector === '.collapse-btn__more' && button ? [button] : [],
       getElementsByTagName: () => uses,
     },
     MutationObserver: Observer, MouseEvent: class {}, XMLHttpRequest: XHR,
     setTimeout(fn) { timers.set(++nextId, fn); return nextId; },
     clearTimeout(id) { timers.delete(id); },
-    addEventListener() {}, removeEventListener() {}, fetch: async () => 'sent',
+    innerHeight: 800, innerWidth: 1200,
+    addEventListener(type, fn) { listen(winListeners, type, fn); },
+    removeEventListener(type, fn) { unlisten(winListeners, type, fn); }, fetch: async () => 'sent',
   });
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { settings, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
-    setButton(value) { button = value; },
+    setButton(value) {
+      if (value) {
+        value.isConnected ??= true;
+        value.getClientRects ??= () => [value.getBoundingClientRect()];
+        value.getBoundingClientRect ??= () => ({ top: 100, bottom: 120, left: 0, right: 100, width: 100, height: 20 });
+      }
+      button = value;
+    },
+    event(type, windowEvent = false) { for (const fn of (windowEvent ? winListeners : docListeners).get(type) || []) fn(); },
+    listenerCount(type, windowEvent = false) { return (windowEvent ? winListeners : docListeners).get(type)?.size || 0; },
     flush() { const batch = [...timers.values()]; timers.clear(); for (const fn of batch) fn(); },
     mutate(records = []) { for (const o of observers) if (o.active) o.callback(records); },
   };
 }
+
+test('index retains searchable rows without retaining the raw patch', () => {
+  const { indexDiffSnapshot, searchDiffRows } = harness().api;
+  const diff = '@@ -0,0 +1,2 @@\n+Hello\n+World\n';
+  const result = indexDiffSnapshot({ total: 1, files: [{ path: 'a.txt', diff }] });
+  assert.equal(Object.hasOwn(result.indexed[0], 'diff'), false);
+  assert.equal(searchDiffRows(result.indexed, 'world').length, 1);
+});
+
+test('closed-search cache expires and log history stays bounded', () => {
+  const h = harness();
+  h.api.seedCache({ indexed: ['large data'] });
+  h.api.expireDiffCache(); h.flush();
+  assert.equal(h.api.cache(), null);
+  for (let i = 0; i < 1000; i++) h.api.recordBlock({ label: 'test' }, 'https://example.com/' + i);
+  assert.equal(h.api.stats.blocked.length, 100);
+  assert.equal(h.api.stats.blocked[0].url, 'example.com/900');
+});
+
+test('declutter scans added subtrees instead of the full page and cancels pending work', () => {
+  const h = harness();
+  let fullScans = 0, localScans = 0;
+  h.context.document.body = {};
+  h.context.document.querySelectorAll = () => { fullScans++; return []; };
+  const node = { nodeType: 1, isConnected: true, matches: () => false,
+    querySelector: () => ({}), querySelectorAll: () => { localScans++; return []; } };
+  h.api.declutter();
+  const initial = fullScans;
+  for (let i = 0; i < 20; i++) { h.mutate([{ addedNodes: [node] }]); h.flush(); }
+  assert.equal(fullScans, initial);
+  assert.ok(localScans > 0);
+  h.mutate([{ addedNodes: [node] }]);
+  h.api.stopDeclutter(); h.flush();
+  assert.equal(h.timers.size, 0);
+});
 
 test('discussion route aliases match, diff and commit pages do not', () => {
   const { PR_PAGE_RE } = harness().api;
@@ -74,6 +124,50 @@ test('captcha exemption follows SPA navigation; fetch URL objects are blocked', 
   await assert.rejects(context.fetch(new URL('https://web-api.gitcode.com/api/v1/report')));
 });
 
+test('slow expansion never clicks the same button again', () => {
+  const h = harness();
+  let clicks = 0;
+  h.setButton({ dispatchEvent() { clicks++; } });
+  h.api.autoExpandPRComments();
+  for (let i = 0; i < 80; i++) { h.mutate(); h.flush(); }
+  assert.equal(clicks, 1);
+  h.setButton({ dispatchEvent() { clicks++; } });
+  h.mutate(); h.flush();
+  assert.equal(clicks, 2, 'newly loaded nested buttons still expand');
+  h.api.cancel();
+  h.mutate(); h.flush();
+  assert.equal(clicks, 2);
+});
+
+test('nearby expansion waits for scrolling, pauses in background and cancels listeners', () => {
+  const h = harness(); let clicks = 0, top = 4000;
+  h.setButton({ dispatchEvent() { clicks++; }, getBoundingClientRect: () => ({ top, bottom: top + 20, width: 100, height: 20, left: 0, right: 100 }) });
+  h.api.autoExpandPRComments(); h.flush();
+  assert.equal(clicks, 0, 'distant content stays folded');
+  top = 200; h.event('scroll'); h.flush();
+  assert.equal(clicks, 1);
+  h.setButton({ dispatchEvent() { clicks++; } });
+  h.context.document.visibilityState = 'hidden'; h.mutate(); h.flush();
+  assert.equal(clicks, 1, 'background tab does not expand content');
+  h.context.document.visibilityState = 'visible'; h.event('visibilitychange'); h.flush();
+  assert.equal(clicks, 2);
+  h.api.cancel(); h.event('scroll'); h.event('resize', true); h.flush();
+  assert.equal(h.listenerCount('scroll'), 0);
+  assert.equal(h.listenerCount('visibilitychange'), 0);
+  assert.equal(h.listenerCount('resize', true), 0);
+  assert.equal(h.timers.size, 0);
+});
+
+test('explicit all mode keeps distant expansion; hidden blocks stay untouched in nearby mode', () => {
+  const h = harness(); let clicks = 0;
+  h.api.settings.pr.expandMode = 'all';
+  h.setButton({ dispatchEvent() { clicks++; }, getBoundingClientRect: () => ({ top: 4000, bottom: 4020, width: 100, height: 20 }) });
+  h.api.autoExpandPRComments(); h.flush(); assert.equal(clicks, 1);
+  h.api.cancel(); h.api.settings.pr.expandMode = 'nearby';
+  h.setButton({ dispatchEvent() { clicks++; }, getClientRects: () => [] });
+  h.api.autoExpandPRComments(); h.flush(); assert.equal(clicks, 1);
+});
+
 test('late comments expand after initial idle; route departure cancels clicks', () => {
   const h = harness();
   h.api.autoExpandPRComments();
@@ -103,10 +197,13 @@ test('restarting expansion disconnects previous observer and timer', () => {
 test('restoring a symbol subtracts its actual node count and updates diagnostics', () => {
   const h = harness();
   const symbols = Array.from({ length: 51 }, (_, i) => ({
-    id: 'icon-' + i, getElementsByTagName: () => [1, 2], remove() {},
+    id: 'icon-' + i, outerHTML: `<symbol id="icon-${i}"><path/><path/></symbol>`, getElementsByTagName: () => [1, 2], remove() {},
   }));
   const restored = [];
-  const sprite = { nodeType: 1, tagName: 'svg', querySelectorAll: () => symbols, appendChild: s => restored.push(s) };
+  const sprite = { nodeType: 1, tagName: 'svg', isConnected: true, querySelectorAll: () => symbols, appendChild: s => restored.push(s) };
+  h.context.document.createElementNS = namespaceURI => ({
+    set innerHTML(markup) { this.firstElementChild = { id: markup.match(/id="([^"]*)"/)?.[1], localName: 'symbol', namespaceURI, outerHTML: markup }; },
+  });
   h.context.document.body = { querySelectorAll: () => [sprite] };
   h.api.installIconSpritePruner();
   assert.equal(h.api.stats.spriteNodesRemoved, 153);
@@ -117,7 +214,25 @@ test('restoring a symbol subtracts its actual node count and updates diagnostics
   assert.equal(h.attrs['data-gce-pruned'], '51->1 nodes-150');
   h.mutate([{ type: 'attributes', target: use }]);
   assert.equal(restored.length, 1);
+  assert.notEqual(restored[0], symbols[0], 'restores from data instead of retaining the removed node');
+  assert.equal(restored[0].outerHTML, symbols[0].outerHTML);
   assert.equal(h.api.stats.spriteNodesRemoved, 150);
+});
+
+test('sprite pruning leaves native icons untouched if safe restoration is unavailable', () => {
+  for (const unavailable of ['WeakRef', 'parsing']) {
+    const h = harness();
+    let scans = 0;
+    h.context.document.body = { querySelectorAll() { scans++; return []; } };
+    if (unavailable === 'WeakRef') h.context.WeakRef = undefined;
+    h.context.document.createElementNS = () => ({
+      set innerHTML(_) { throw new TypeError('TrustedHTML required'); },
+    });
+    h.api.installIconSpritePruner();
+    assert.equal(scans, 0);
+    assert.equal(h.api.stats.spritePruned, 0);
+    assert.equal(h.observers.length, 0);
+  }
 });
 
 

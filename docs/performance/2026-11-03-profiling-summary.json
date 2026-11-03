@@ -1,0 +1,1272 @@
+{
+  "date": "2026-11-03",
+  "sampleContext": "Edge logged in, aggressive, warm-cache reloads, other extensions enabled; small-sample diagnosis, not release benchmark",
+  "samples": [
+    {
+      "label": "dashboard-off-1",
+      "url": "https://gitcode.com/dashboard/latest-activity",
+      "atMs": 11999.799999952316,
+      "enabled": false,
+      "verifiedScript": false,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 137633,
+          "dcl": 4902,
+          "load": 5050.399999976158,
+          "ttfb": 4265.099999904633
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 4772
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 4772
+        }
+      ],
+      "domElements": 5793,
+      "heap": {
+        "backingStorageSize": 24292651,
+        "embedderHeapUsedSize": 55853616,
+        "totalSize": 150286336,
+        "usedSize": 120338688
+      },
+      "longTasks": [
+        {
+          "duration": 95,
+          "start": 4868.699999928474
+        },
+        {
+          "duration": 70,
+          "start": 5341.099999904633
+        },
+        {
+          "duration": 171,
+          "start": 5614.799999952316
+        },
+        {
+          "duration": 80,
+          "start": 5787.199999928474
+        }
+      ],
+      "trace": {
+        "events": 7676,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 300.86,
+      "observedRequests": 95,
+      "resourceTimingCapped": false
+    },
+    {
+      "label": "dashboard-off-2",
+      "url": "https://gitcode.com/dashboard/latest-activity",
+      "atMs": 11999.799999952316,
+      "enabled": false,
+      "verifiedScript": false,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 137633,
+          "dcl": 684.3999999761581,
+          "load": 971.899999976158,
+          "ttfb": 180.39999997615817
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 612
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 612
+        }
+      ],
+      "domElements": 5793,
+      "heap": {
+        "backingStorageSize": 25180796,
+        "embedderHeapUsedSize": 62090208,
+        "totalSize": 148336640,
+        "usedSize": 136539844
+      },
+      "longTasks": [
+        {
+          "duration": 50,
+          "start": 570.3999999761581
+        },
+        {
+          "duration": 75,
+          "start": 624.6000000238419
+        },
+        {
+          "duration": 91,
+          "start": 1340.399999976158
+        },
+        {
+          "duration": 190,
+          "start": 1478.1999999284744
+        },
+        {
+          "duration": 81,
+          "start": 1669
+        }
+      ],
+      "trace": {
+        "events": 7497,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 516.94,
+      "observedRequests": 96,
+      "resourceTimingCapped": false
+    },
+    {
+      "label": "dashboard-on-1",
+      "url": "https://gitcode.com/dashboard/latest-activity",
+      "atMs": 12000.299999952316,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 137633,
+          "dcl": 1103.5,
+          "load": 1290.1999999284744,
+          "ttfb": 592.5999999046326
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 1016
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 1016
+        }
+      ],
+      "domElements": 447,
+      "heap": {
+        "backingStorageSize": 20554586,
+        "embedderHeapUsedSize": 19431280,
+        "totalSize": 113164288,
+        "usedSize": 60201948
+      },
+      "longTasks": [
+        {
+          "duration": 103,
+          "start": 632.7999999523163
+        },
+        {
+          "duration": 55,
+          "start": 1067.5999999046326
+        },
+        {
+          "duration": 77,
+          "start": 1363.0999999046326
+        },
+        {
+          "duration": 69,
+          "start": 1680.0999999046326
+        },
+        {
+          "duration": 66,
+          "start": 1821.0999999046328
+        },
+        {
+          "duration": 71,
+          "start": 1888.0999999046328
+        },
+        {
+          "duration": 147,
+          "start": 2030.7999999523165
+        },
+        {
+          "duration": 111,
+          "start": 2178.5
+        }
+      ],
+      "trace": {
+        "events": 8650,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 472.87,
+      "observedRequests": 90,
+      "resourceTimingCapped": false
+    },
+    {
+      "label": "dashboard-on-2",
+      "url": "https://gitcode.com/dashboard/latest-activity",
+      "atMs": 11999.600000023842,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 137633,
+          "dcl": 906.4000000953674,
+          "load": 1119.9000000953674,
+          "ttfb": 153.5
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 884
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 884
+        }
+      ],
+      "domElements": 447,
+      "heap": {
+        "backingStorageSize": 24482872,
+        "embedderHeapUsedSize": 43363744,
+        "totalSize": 120430592,
+        "usedSize": 98100368
+      },
+      "longTasks": [
+        {
+          "duration": 50,
+          "start": 505.60000002384186
+        },
+        {
+          "duration": 133,
+          "start": 557.8000000715256
+        },
+        {
+          "duration": 58,
+          "start": 855.2000000476837
+        },
+        {
+          "duration": 60,
+          "start": 1176.9000000953674
+        },
+        {
+          "duration": 66,
+          "start": 1253.8000000715256
+        },
+        {
+          "duration": 476,
+          "start": 1344.5
+        },
+        {
+          "duration": 158,
+          "start": 2226.2000000476837
+        },
+        {
+          "duration": 87,
+          "start": 2384.3000000715256
+        },
+        {
+          "duration": 117,
+          "start": 2528.7000000476837
+        }
+      ],
+      "trace": {
+        "events": 8078,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 288.05,
+      "observedRequests": 90,
+      "resourceTimingCapped": false
+    },
+    {
+      "label": "diff-fixed-1",
+      "url": "https://gitcode.com/Ascend/torchtitan-ascend/pull/10/diffs",
+      "atMs": 12000.899999976158,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 1091874,
+          "dcl": 2882.399999976158,
+          "load": 3237.7999999523163,
+          "ttfb": 1302.5999999046326
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 1832
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 1832
+        }
+      ],
+      "domElements": 2802,
+      "heap": {
+        "backingStorageSize": 23908147,
+        "embedderHeapUsedSize": 142606296,
+        "totalSize": 195076096,
+        "usedSize": 139787140
+      },
+      "longTasks": [
+        {
+          "duration": 148,
+          "start": 1374.5999999046326
+        },
+        {
+          "duration": 115,
+          "start": 1600.0999999046326
+        },
+        {
+          "duration": 75,
+          "start": 1783.0999999046326
+        },
+        {
+          "duration": 94,
+          "start": 1925.2999999523165
+        },
+        {
+          "duration": 93,
+          "start": 2102.7999999523163
+        },
+        {
+          "duration": 346,
+          "start": 2537.5
+        },
+        {
+          "duration": 331,
+          "start": 3171.1999999284744
+        },
+        {
+          "duration": 230,
+          "start": 3642
+        },
+        {
+          "duration": 1269,
+          "start": 4246.699999928474
+        },
+        {
+          "duration": 384,
+          "start": 5517.399999976158
+        },
+        {
+          "duration": 92,
+          "start": 5902.199999928474
+        },
+        {
+          "duration": 208,
+          "start": 6001.599999904633
+        },
+        {
+          "duration": 205,
+          "start": 6268.599999904633
+        },
+        {
+          "duration": 215,
+          "start": 6777.099999904633
+        },
+        {
+          "duration": 226,
+          "start": 6992.699999928474
+        },
+        {
+          "duration": 50,
+          "start": 7569.599999904633
+        }
+      ],
+      "trace": {
+        "events": 26880,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 3001.71,
+      "observedRequests": 320,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "diff-fixed-2",
+      "url": "https://gitcode.com/Ascend/torchtitan-ascend/pull/10/diffs",
+      "atMs": 12000.100000023842,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 1091879,
+          "dcl": 2971,
+          "load": 3380.2000000476837,
+          "ttfb": 1546.3000000715256
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 2012
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 2012
+        }
+      ],
+      "domElements": 2802,
+      "heap": {
+        "backingStorageSize": 28724036,
+        "embedderHeapUsedSize": 174916744,
+        "totalSize": 147591168,
+        "usedSize": 99158368
+      },
+      "longTasks": [
+        {
+          "duration": 204,
+          "start": 1631.600000023842
+        },
+        {
+          "duration": 337,
+          "start": 2635.2000000476837
+        },
+        {
+          "duration": 281,
+          "start": 3320.2000000476837
+        },
+        {
+          "duration": 244,
+          "start": 3630
+        },
+        {
+          "duration": 100,
+          "start": 4090.5
+        },
+        {
+          "duration": 259,
+          "start": 4239
+        },
+        {
+          "duration": 283,
+          "start": 4498.600000023842
+        },
+        {
+          "duration": 157,
+          "start": 5026.800000071526
+        },
+        {
+          "duration": 1089,
+          "start": 5186
+        },
+        {
+          "duration": 291,
+          "start": 6277.200000047684
+        },
+        {
+          "duration": 55,
+          "start": 8640.399999976158
+        },
+        {
+          "duration": 68,
+          "start": 9944.300000071526
+        }
+      ],
+      "trace": {
+        "events": 26393,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 2660.26,
+      "observedRequests": 320,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "diff-off-1",
+      "url": "https://gitcode.com/Ascend/torchtitan-ascend/pull/10/diffs",
+      "atMs": 12000.100000023842,
+      "enabled": false,
+      "verifiedScript": false,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 1091874,
+          "dcl": 3538.100000023842,
+          "load": 3985.100000023842,
+          "ttfb": 1502.3000000715256
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 2684
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 2684
+        }
+      ],
+      "domElements": 7012,
+      "heap": {
+        "backingStorageSize": 22941914,
+        "embedderHeapUsedSize": 39592864,
+        "totalSize": 163127296,
+        "usedSize": 79812864
+      },
+      "longTasks": [
+        {
+          "duration": 134,
+          "start": 1559.9000000953674
+        },
+        {
+          "duration": 117,
+          "start": 2433.900000095367
+        },
+        {
+          "duration": 54,
+          "start": 2640.7000000476837
+        },
+        {
+          "duration": 74,
+          "start": 2803.600000023842
+        },
+        {
+          "duration": 79,
+          "start": 2940.5
+        },
+        {
+          "duration": 285,
+          "start": 3253.600000023842
+        },
+        {
+          "duration": 82,
+          "start": 3798.5
+        },
+        {
+          "duration": 379,
+          "start": 3892.5
+        },
+        {
+          "duration": 103,
+          "start": 4640
+        },
+        {
+          "duration": 63,
+          "start": 4760.900000095367
+        },
+        {
+          "duration": 1037,
+          "start": 5559.800000071526
+        },
+        {
+          "duration": 346,
+          "start": 6599.300000071526
+        },
+        {
+          "duration": 190,
+          "start": 7695.600000023842
+        },
+        {
+          "duration": 199,
+          "start": 8607.100000023842
+        }
+      ],
+      "trace": {
+        "events": 43029,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 2212.63,
+      "observedRequests": 334,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "discussion-fixed-1",
+      "url": "https://gitcode.com/Ascend/pytorch/pull/48352",
+      "atMs": 11999.800000071526,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 368077,
+          "dcl": 3219.100000023842,
+          "load": 3437,
+          "ttfb": 1765.3000000715256
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 3040
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 3040
+        }
+      ],
+      "domElements": 5213,
+      "heap": {
+        "backingStorageSize": 23327816,
+        "embedderHeapUsedSize": 99166512,
+        "totalSize": 205115392,
+        "usedSize": 137196572
+      },
+      "longTasks": [
+        {
+          "duration": 73,
+          "start": 2834.899999976158
+        },
+        {
+          "duration": 88,
+          "start": 3131.600000023842
+        },
+        {
+          "duration": 55,
+          "start": 3364.399999976158
+        },
+        {
+          "duration": 92,
+          "start": 3487.399999976158
+        },
+        {
+          "duration": 94,
+          "start": 3790.8000000715256
+        },
+        {
+          "duration": 939,
+          "start": 3935.5
+        },
+        {
+          "duration": 139,
+          "start": 4874.899999976158
+        },
+        {
+          "duration": 89,
+          "start": 5020
+        },
+        {
+          "duration": 101,
+          "start": 5109.200000047684
+        },
+        {
+          "duration": 1404,
+          "start": 6600.300000071526
+        },
+        {
+          "duration": 69,
+          "start": 8029.700000047684
+        },
+        {
+          "duration": 166,
+          "start": 8597.5
+        },
+        {
+          "duration": 51,
+          "start": 8768.200000047684
+        },
+        {
+          "duration": 86,
+          "start": 8848.300000071526
+        },
+        {
+          "duration": 74,
+          "start": 9350.700000047684
+        },
+        {
+          "duration": 113,
+          "start": 9853.800000071526
+        },
+        {
+          "duration": 101,
+          "start": 10356.600000023842
+        }
+      ],
+      "trace": {
+        "events": 25756,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 1405.05,
+      "observedRequests": 281,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "discussion-fixed-2",
+      "url": "https://gitcode.com/Ascend/pytorch/pull/48352",
+      "atMs": 12000.200000047684,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 368077,
+          "dcl": 3288.5,
+          "load": 3449.399999976158,
+          "ttfb": 1910.2999999523165
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 3112
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 3112
+        }
+      ],
+      "domElements": 5213,
+      "heap": {
+        "backingStorageSize": 43691152,
+        "embedderHeapUsedSize": 128398384,
+        "totalSize": 274919424,
+        "usedSize": 222999640
+      },
+      "longTasks": [
+        {
+          "duration": 106,
+          "start": 1984.2000000476835
+        },
+        {
+          "duration": 96,
+          "start": 2899.600000023842
+        },
+        {
+          "duration": 91,
+          "start": 3198.2999999523163
+        },
+        {
+          "duration": 88,
+          "start": 3435
+        },
+        {
+          "duration": 76,
+          "start": 3575.7000000476837
+        },
+        {
+          "duration": 86,
+          "start": 3818.899999976158
+        },
+        {
+          "duration": 118,
+          "start": 3946.5
+        },
+        {
+          "duration": 90,
+          "start": 4065.100000023842
+        },
+        {
+          "duration": 659,
+          "start": 4184.899999976158
+        },
+        {
+          "duration": 157,
+          "start": 4844.200000047684
+        },
+        {
+          "duration": 50,
+          "start": 5085.399999976158
+        },
+        {
+          "duration": 1326,
+          "start": 6503.399999976158
+        },
+        {
+          "duration": 132,
+          "start": 7869.100000023842
+        },
+        {
+          "duration": 86,
+          "start": 8708.799999952316
+        },
+        {
+          "duration": 74,
+          "start": 8795.200000047684
+        },
+        {
+          "duration": 72,
+          "start": 8869.600000023842
+        },
+        {
+          "duration": 119,
+          "start": 9212.100000023842
+        },
+        {
+          "duration": 113,
+          "start": 9717.399999976158
+        },
+        {
+          "duration": 100,
+          "start": 10220.100000023842
+        }
+      ],
+      "trace": {
+        "events": 24889,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 1334.86,
+      "observedRequests": 283,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "discussion-no-expand",
+      "url": "https://gitcode.com/Ascend/pytorch/pull/48352",
+      "atMs": 12000.199999928474,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 368077,
+          "dcl": 2927.6999999284744,
+          "load": 3141.1999999284744,
+          "ttfb": 1425.899999976158
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 2752
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 2752
+        }
+      ],
+      "domElements": 1624,
+      "heap": {
+        "backingStorageSize": 22613185,
+        "embedderHeapUsedSize": 105080992,
+        "totalSize": 185671680,
+        "usedSize": 80207988
+      },
+      "longTasks": [
+        {
+          "duration": 94,
+          "start": 2535.100000023842
+        },
+        {
+          "duration": 140,
+          "start": 2829.5
+        },
+        {
+          "duration": 60,
+          "start": 3059.5
+        },
+        {
+          "duration": 88,
+          "start": 3123.899999976158
+        },
+        {
+          "duration": 74,
+          "start": 3240.2999999523163
+        },
+        {
+          "duration": 160,
+          "start": 3481.2999999523163
+        },
+        {
+          "duration": 84,
+          "start": 3666.6999999284744
+        },
+        {
+          "duration": 86,
+          "start": 3751.100000023842
+        },
+        {
+          "duration": 58,
+          "start": 3859.299999952316
+        },
+        {
+          "duration": 61,
+          "start": 3942.799999952316
+        },
+        {
+          "duration": 869,
+          "start": 4058.399999976158
+        },
+        {
+          "duration": 83,
+          "start": 5095.299999952316
+        },
+        {
+          "duration": 62,
+          "start": 5302.100000023842
+        },
+        {
+          "duration": 60,
+          "start": 5364.699999928474
+        },
+        {
+          "duration": 60,
+          "start": 5424.699999928474
+        },
+        {
+          "duration": 61,
+          "start": 5527.600000023842
+        },
+        {
+          "duration": 60,
+          "start": 5630.100000023842
+        },
+        {
+          "duration": 53,
+          "start": 5727.899999976158
+        },
+        {
+          "duration": 56,
+          "start": 5815.799999952316
+        },
+        {
+          "duration": 56,
+          "start": 5908.100000023842
+        },
+        {
+          "duration": 55,
+          "start": 5999.699999928474
+        },
+        {
+          "duration": 52,
+          "start": 6095
+        },
+        {
+          "duration": 66,
+          "start": 6184.399999976158
+        },
+        {
+          "duration": 84,
+          "start": 11548.699999928474
+        }
+      ],
+      "trace": {
+        "events": 19111,
+        "complete": true,
+        "cursorReset": true
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 1873.55,
+      "observedRequests": 362,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "discussion-no-global-has-1",
+      "url": "https://gitcode.com/Ascend/pytorch/pull/48352",
+      "atMs": 12092,
+      "enabled": true,
+      "verifiedScript": true,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 368077,
+          "dcl": 2630.600000023842,
+          "load": 2870.6999999284744,
+          "ttfb": 1326.899999976158
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 2472
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 2472
+        }
+      ],
+      "domElements": 5281,
+      "heap": {
+        "backingStorageSize": 39044557,
+        "embedderHeapUsedSize": 112272880,
+        "totalSize": 233099264,
+        "usedSize": 183586320
+      },
+      "longTasks": [
+        {
+          "duration": 124,
+          "start": 1385.399999976158
+        },
+        {
+          "duration": 73,
+          "start": 2311.100000023842
+        },
+        {
+          "duration": 87,
+          "start": 2578.7999999523163
+        },
+        {
+          "duration": 83,
+          "start": 2917
+        },
+        {
+          "duration": 96,
+          "start": 3105.2999999523163
+        },
+        {
+          "duration": 93,
+          "start": 3215.100000023842
+        },
+        {
+          "duration": 104,
+          "start": 3309.1999999284744
+        },
+        {
+          "duration": 608,
+          "start": 3695.1999999284744
+        },
+        {
+          "duration": 111,
+          "start": 4303.699999928474
+        },
+        {
+          "duration": 1405,
+          "start": 5749.899999976158
+        },
+        {
+          "duration": 102,
+          "start": 7189.600000023842
+        },
+        {
+          "duration": 71,
+          "start": 7994.5
+        },
+        {
+          "duration": 111,
+          "start": 8066.600000023842
+        },
+        {
+          "duration": 96,
+          "start": 8497.199999928474
+        },
+        {
+          "duration": 98,
+          "start": 9000.100000023842
+        },
+        {
+          "duration": 120,
+          "start": 9502
+        },
+        {
+          "duration": 186,
+          "start": 11902.699999928474
+        }
+      ],
+      "trace": {
+        "events": 28209,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 1274.15,
+      "observedRequests": 372,
+      "resourceTimingCapped": true
+    },
+    {
+      "label": "discussion-off-1",
+      "url": "https://gitcode.com/Ascend/pytorch/pull/48352",
+      "atMs": 12000.200000047684,
+      "enabled": false,
+      "verifiedScript": false,
+      "visibility": "visible",
+      "nav": [
+        {
+          "bytes": 368077,
+          "dcl": 2455.400000095367,
+          "load": 3043.100000023842,
+          "ttfb": 1254.2000000476835
+        }
+      ],
+      "paint": [
+        {
+          "name": "first-paint",
+          "t": 2432
+        },
+        {
+          "name": "first-contentful-paint",
+          "t": 2432
+        }
+      ],
+      "domElements": 5842,
+      "heap": {
+        "backingStorageSize": 28764735,
+        "embedderHeapUsedSize": 55858352,
+        "totalSize": 155193344,
+        "usedSize": 85230360
+      },
+      "longTasks": [
+        {
+          "duration": 177,
+          "start": 1340
+        },
+        {
+          "duration": 96,
+          "start": 2397.8000000715256
+        },
+        {
+          "duration": 55,
+          "start": 2884
+        },
+        {
+          "duration": 107,
+          "start": 3094.900000095367
+        },
+        {
+          "duration": 96,
+          "start": 3402.600000023842
+        },
+        {
+          "duration": 615,
+          "start": 3755.3000000715256
+        },
+        {
+          "duration": 110,
+          "start": 4370.600000023842
+        }
+      ],
+      "trace": {
+        "events": 11839,
+        "complete": true,
+        "cursorReset": false
+      },
+      "rootThreads": [
+        "19916:18860"
+      ],
+      "styleMs": 668.79,
+      "observedRequests": 366,
+      "resourceTimingCapped": true
+    }
+  ],
+  "matchedWindows": [
+    {
+      "label": "discussion-on-timeout",
+      "windowMs": 10000,
+      "styleMs": 4640.73,
+      "mainThreads": [
+        "19916:18860"
+      ],
+      "missingSampleNodes": 0
+    },
+    {
+      "label": "discussion-on-repeat",
+      "windowMs": 10000,
+      "styleMs": 5301.87,
+      "mainThreads": [
+        "19916:18860"
+      ],
+      "missingSampleNodes": 0
+    },
+    {
+      "label": "discussion-fixed-1",
+      "windowMs": 10000,
+      "styleMs": 1399.86,
+      "mainThreads": [
+        "19916:18860"
+      ],
+      "missingSampleNodes": 0
+    },
+    {
+      "label": "discussion-fixed-2",
+      "windowMs": 10000,
+      "styleMs": 1327.05,
+      "mainThreads": [
+        "19916:18860"
+      ],
+      "missingSampleNodes": 0
+    }
+  ],
+  "memory": [
+    {
+      "label": "search-open-memory",
+      "state": {
+        "sprites": {
+          "symbols": 1561,
+          "nodes": 4745,
+          "serializedChars": 1415313
+        },
+        "cache": {
+          "cached": true,
+          "files": 22,
+          "rows": 867,
+          "textChars": 63460
+        },
+        "highlights": [
+          [
+            "gce-matches",
+            8
+          ]
+        ],
+        "rows": 201
+      },
+      "heap": {
+        "backingStorageSize": 23667349,
+        "embedderHeapUsedSize": 24650624,
+        "totalSize": 79921152,
+        "usedSize": 76369204
+      }
+    },
+    {
+      "label": "search-closed-memory",
+      "state": {
+        "cache": {
+          "cached": true,
+          "files": 22,
+          "rows": 867,
+          "textChars": 63460
+        },
+        "highlights": []
+      },
+      "heap": {
+        "backingStorageSize": 23668598,
+        "embedderHeapUsedSize": 26032904,
+        "totalSize": 80969728,
+        "usedSize": 77067020
+      }
+    },
+    {
+      "label": "search-expired-memory",
+      "elapsedSinceCloseMs": 121763,
+      "state": {
+        "cache": {
+          "cached": false,
+          "files": 0,
+          "rows": 0,
+          "textChars": 0
+        },
+        "highlights": []
+      },
+      "heap": {
+        "backingStorageSize": 20482699,
+        "embedderHeapUsedSize": 26179080,
+        "totalSize": 77561856,
+        "usedSize": 72897988
+      }
+    }
+  ]
+}

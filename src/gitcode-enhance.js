@@ -12,7 +12,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.3';
+  const VERSION = '0.3.4';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -98,7 +98,7 @@
   const DEFAULTS = {
     adblock: { udeskWidget: true, floatTools: true, aiTranslateNotice: true, promo: true },
     theme: { github: true },
-    pr: { autoExpand: true, reviewTools: true },
+    pr: { autoExpand: true, expandMode: 'nearby', reviewTools: true },
     // /dashboard 默认是 AI Agent 聊天页，打开 gitcode.com 也会跳到这里。改成落到工作台的某个真实页面。
     dashboard: { home: 'latest-activity' },
     ui: { headerButton: true, floatingPosition: 'left-bottom', reviewPosition: 'right-bottom', searchPosition: 'right-top' },
@@ -259,6 +259,9 @@
     if (blockedUrlSeen.has(short)) return;
     blockedUrlSeen.add(short);
     stats.blocked.push({ cat: rule.label, url: short });
+    if (stats.blocked.length > 100) {
+      blockedUrlSeen.delete(stats.blocked.shift().url);
+    }
     log(`拦截[${rule.label}]`, short);
   }
 
@@ -377,12 +380,39 @@
   // 塞一个含 1389 个 <symbol> 的 <svg>，共 4172 个 DOM 节点，占仓库页全部节点的 68%，
   // 而一个页面实际用到的图标只有 45～50 个。实测把没用的 symbol 摘掉后，
   // 整页样式重算耗时从 87ms 降到 29ms（仓库页）/ 127ms 降到 63ms（展开 363 条评论的 PR 页）。
-  // 摘掉的 symbol 放在内存里，页面之后新出现 <use href="#xxx"> 时同步放回去，不会丢图标。
+  // 未使用的 symbol 仅保存 SVG 文本，出现引用时重建；不强引用已移除的节点。
   // =====================================================================
   function installIconSpritePruner() {
     // gitcode 有两份雪碧图（两个 iconfont 项目：357 个 + 1389 个 symbol），都要处理。
-    const stash = new Map(); // symbol id -> { sym, sprite }
-    const sprites = new Set();
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    // Weak destinations do not retain a sprite tree removed during SPA navigation.
+    if (typeof WeakRef !== 'function') return;
+    function deserialize(markup) {
+      const svg = document.createElementNS(SVG_NS, 'svg');
+      svg.innerHTML = markup;
+      const symbol = svg.firstElementChild;
+      if (symbol?.localName !== 'symbol' || symbol.namespaceURI !== SVG_NS) throw new Error('Invalid SVG symbol');
+      return symbol;
+    }
+    // If the page forbids this parsing sink, leave its original icons untouched.
+    try { deserialize('<symbol></symbol>'); } catch { return; }
+    const stash = new Map(); // symbol id -> { markup, sprite: WeakRef, nodeCount }
+    const sprites = new WeakSet();
+    let fallbackSprite = null;
+
+    function destination(entry) {
+      const original = entry.sprite.deref();
+      if (original?.isConnected) return original;
+      let svg = fallbackSprite?.deref();
+      if (svg?.isConnected) return svg;
+      svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;pointer-events:none';
+      sprites.add(svg);
+      document.body.appendChild(svg);
+      fallbackSprite = new WeakRef(svg);
+      return svg;
+    }
 
     function updateSpriteStats() {
       debug('pruned', `${stats.spriteSymbols}->${stats.spriteSymbols - stats.spritePruned} nodes-${stats.spriteNodesRemoved}`);
@@ -397,8 +427,9 @@
       if (!id) return;
       const entry = stash.get(id);
       if (!entry) return;
+      try { destination(entry).appendChild(deserialize(entry.markup)); }
+      catch { return; } // Preserve data for a later reference if restoration failed.
       stash.delete(id);
-      entry.sprite.appendChild(entry.sym);
       stats.spriteRestored++;
       stats.spritePruned--;
       stats.spriteNodesRemoved -= entry.nodeCount;
@@ -423,7 +454,7 @@
         if (!sym.id || used.has(sym.id)) continue;
         const nodeCount = sym.getElementsByTagName('*').length + 1;
         removedNodes += nodeCount;
-        stash.set(sym.id, { sym, sprite: svg, nodeCount });
+        stash.set(sym.id, { markup: sym.outerHTML, sprite: new WeakRef(svg), nodeCount });
         sym.remove();
         pruned++;
       }
@@ -515,8 +546,9 @@
   // =====================================================================
   // 去干扰：需要靠 JS 找的元素（没有稳定 class）
   // =====================================================================
-  function hideAiTranslationNotice() {
-    const link = Array.from(document.querySelectorAll('a')).find((a) => a.textContent.includes('提交 issue 反馈'));
+  function hideAiTranslationNotice(root = document) {
+    const links = root.matches?.('a') ? [root] : root.querySelectorAll('a');
+    const link = Array.from(links).find((a) => a.textContent.includes('提交 issue 反馈'));
     if (!link) return false;
     const bar = link.closest('.repo-markdown-card-header') ? link.parentElement.parentElement : null;
     if (bar && bar.style.display !== 'none') {
@@ -526,10 +558,11 @@
     return true;
   }
 
-  function hidePromoImages() {
+  function hidePromoImages(root = document) {
     // 活动位图片来自 cdn-static.gitcode.com/adList/*，把它所在的链接/轮播项藏掉
     let n = 0;
-    for (const img of document.querySelectorAll('img[src*="/adList/"]')) {
+    const selector = 'img[src*="/adList/"]';
+    for (const img of root.matches?.(selector) ? [root] : root.querySelectorAll(selector)) {
       const box = img.closest('a, li, .swiper-slide, [class*="banner"], [class*="carousel"]') || img;
       if (box.style.display !== 'none') { box.style.display = 'none'; n++; }
     }
@@ -542,24 +575,32 @@
   function declutter() {
     stopDeclutter();
     let timer = null;
+    const pending = new Set();
     function scan() {
       timer = null;
-      if (settings.adblock.aiTranslateNotice) hideAiTranslationNotice();
-      if (settings.adblock.promo) hidePromoImages();
+      const roots = [...pending]; pending.clear();
+      for (const root of roots) {
+        if (root !== document && !root.isConnected) continue;
+        if (settings.adblock.aiTranslateNotice) hideAiTranslationNotice(root);
+        if (settings.adblock.promo) hidePromoImages(root);
+      }
     }
     const observer = new MutationObserver(records => {
-      if (timer !== null) return;
-      const relevant = records.some(record => Array.from(record.addedNodes).some(node => node.nodeType === 1 &&
-        (node.matches?.('a, img') || node.querySelector?.('a, img'))));
-      if (relevant) timer = setTimeout(scan, 250);
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node.nodeType !== 1 || pending.has(document)) continue;
+        if (node.matches?.('a, img') || node.querySelector?.('a, img')) pending.add(node);
+        // Bound retained subtrees during large hydration batches.
+        if (pending.size > 128) { pending.clear(); pending.add(document); }
+      }
+      if (pending.size && timer === null) timer = setTimeout(scan, 250);
     });
     if (settings.adblock.aiTranslateNotice || settings.adblock.promo) observer.observe(document.body, { childList: true, subtree: true });
-    scan();
-    stopDeclutter = () => { observer.disconnect(); clearTimeout(timer); };
+    pending.add(document); scan();
+    stopDeclutter = () => { observer.disconnect(); clearTimeout(timer); pending.clear(); stopDeclutter = () => {}; };
   }
 
   // =====================================================================
-  // 功能：PR 讨论区自动展开所有折叠的消息
+  // 功能：PR 讨论区按阅读位置展开折叠的消息（可选全部展开）
   // 折叠块 ".collapse-btn"（“此处折叠了 363 条消息 查看更多”），点开后里面可能还嵌套新的折叠块，
   // 用 DOM 观察等待延迟加载的评论，路由离开时取消。Vue 的 click 绑在内层 .collapse-btn__more 上。
   // =====================================================================
@@ -570,22 +611,43 @@
     const COLLAPSE_SELECTOR = '.collapse-btn__more';
     const CLICK_DELAY_MS = 500;
     const MAX_TICKS = 300;
-    let ticks = 0, expanded = 0, timer = null;
+    let ticks = 0, expanded = 0, timer = null, stopped = false;
+    // A slow request can leave its trigger mounted. Never auto-retry that node;
+    // manual clicks remain available, and newly mounted nested triggers are eligible.
+    const clicked = new WeakSet();
     const observer = new MutationObserver(schedule);
     function stop() {
+      stopped = true;
       clearTimeout(timer);
+      timer = null;
       observer.disconnect();
+      document.removeEventListener('scroll', schedule, true);
+      document.removeEventListener('visibilitychange', schedule);
+      W.removeEventListener('resize', schedule);
+      if (cancelPRExpansion === stop) cancelPRExpansion = () => {};
     }
     cancelPRExpansion = stop;
     function schedule() {
-      if (timer === null) timer = setTimeout(tick, CLICK_DELAY_MS);
+      if (!stopped && timer === null) timer = setTimeout(tick, CLICK_DELAY_MS);
+    }
+
+    function eligible(node) {
+      if (clicked.has(node) || !node.isConnected) return false;
+      if (settings.pr.expandMode === 'all') return true;
+      if (!node.getClientRects().length) return false;
+      const rect = node.getBoundingClientRect();
+      // Read only the few native fold triggers, never the whole discussion tree.
+      return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= W.innerHeight + 320
+        && rect.right >= 0 && rect.left <= W.innerWidth;
     }
 
     function tick() {
       timer = null;
-      if (location.pathname !== path) { stop(); return; }
-      const btn = document.querySelector(COLLAPSE_SELECTOR);
+      if (stopped || location.pathname !== path) { stop(); return; }
+      if (document.visibilityState === 'hidden') return;
+      const btn = Array.from(document.querySelectorAll(COLLAPSE_SELECTOR)).find(eligible);
       if (btn) {
+        clicked.add(btn);
         ticks++;
         expanded++;
         stats.prExpanded++;
@@ -595,8 +657,11 @@
       }
     }
 
-    log('开始自动展开 PR 折叠评论…');
+    log(settings.pr.expandMode === 'all' ? '开始自动展开全部 PR 折叠评论…' : '开始按阅读位置展开 PR 折叠评论…');
     observer.observe(document, { childList: true, subtree: true });
+    document.addEventListener('scroll', schedule, { capture: true, passive: true });
+    document.addEventListener('visibilitychange', schedule);
+    W.addEventListener('resize', schedule, { passive: true });
     schedule();
   }
 
@@ -670,7 +735,8 @@
       }
       const parsed = parseDiffLines(file.diff);
       if (!parsed.complete || file.tooLarge) { incomplete++; issues.push(`${file.path}（差异被截断或不完整）`); }
-      return [{ ...file, rows: parsed.rows.map(row => ({ ...row, lowerText: row.text.toLowerCase() })) }];
+      const { diff, ...metadata } = file;
+      return [{ ...metadata, rows: parsed.rows.map(row => ({ ...row, lowerText: row.text.toLowerCase() })) }];
     });
     return { indexed, incomplete, binary, empty, issues };
   }
@@ -713,10 +779,19 @@
   let closeDiffSearch = () => {};
   let refocusDiffSearch = () => {};
   let diffSearchCache = null;
+  let diffCacheTimer = null;
+  function clearDiffCache() {
+    clearTimeout(diffCacheTimer); diffCacheTimer = null; diffSearchCache = null;
+  }
+  function expireDiffCache() {
+    clearTimeout(diffCacheTimer);
+    diffCacheTimer = setTimeout(clearDiffCache, 60000);
+  }
   function openDiffSearch() {
     const existing = document.getElementById('gce-diff-search');
     if (existing) { refocusDiffSearch(); return; }
     closeDiffSearch();
+    clearTimeout(diffCacheTimer); diffCacheTimer = null;
     const url = location.href, path = location.pathname;
     let originPath = currentDiffPath();
     const host = document.createElement('div'); host.id = 'gce-diff-search';
@@ -815,7 +890,14 @@
       W.CSS?.highlights?.delete('gce-matches');
     }
     function dismiss() { host.remove(); }
-    function cleanup() { disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++; matchObserver.disconnect(); clearMatches(); clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true); }
+    function cleanup() {
+      if (disposed) return;
+      disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++;
+      matchObserver.disconnect(); clearMatches(); clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true);
+      hits = []; indexed = []; snapshot = null;
+      expireDiffCache();
+      closeDiffSearch = () => {}; refocusDiffSearch = () => {};
+    }
     closeDiffSearch = cleanup;
     function escape(event) { if (event.key === 'Escape') { event.stopPropagation(); cleanup(); } }
     document.addEventListener('keydown', escape, true); close.addEventListener('click', cleanup);
@@ -954,6 +1036,7 @@
         ready = true;
         indexed = result.indexed;
         coverage.textContent = `已索引 ${indexed.length}/${snapshot.total} 个文件 · 提交 ${snapshot.commit.slice(0, 8) || '未知'}${result.empty ? ` · ${result.empty} 个空文件无需文本搜索` : ''}${result.binary ? ` · ${result.binary} 个二进制文件不支持文本搜索` : ''}${result.incomplete ? ` · ${result.incomplete} 个文件未完整索引：${result.issues.join('；')}，搜索可能遗漏` : ' · 已覆盖服务器提供的全部文本 diff'}`;
+        snapshot = { commit: snapshot.commit, total: snapshot.total };
         diffSearchCache = { key: cacheKey, snapshot, indexed, coverage: coverage.textContent };
         search(true);
       } catch (error) { if (!disposed) { coverage.textContent = error.message; summary.textContent = '未能建立索引，请关闭后重试。'; } }
@@ -1029,6 +1112,8 @@
       if (!host || !host.isConnected) {
         host?.remove();
         host = document.createElement('div'); host.id = 'gce-review-tools';
+        document.documentElement.classList.add('gce-review-page');
+        document.documentElement.classList.remove('gce-review-focus');
         root = host.attachShadow({ mode: 'open' });
         const style = document.createElement('style');
         style.textContent = `
@@ -1062,6 +1147,7 @@
         focus = button('专注模式', () => {
           const on = host.dataset.focus !== 'true';
           host.dataset.focus = String(on);
+          document.documentElement.classList.toggle('gce-review-focus', on);
           focus.setAttribute('aria-pressed', String(on));
         });
         focus.setAttribute('aria-pressed', 'false');
@@ -1106,7 +1192,10 @@
     refresh();
     stopReviewTools = () => {
       observer.disconnect(); clearTimeout(timer); clearTimeout(scrollTimer); host?.remove();
+      document.documentElement.classList.remove('gce-review-page', 'gce-review-focus');
       document.removeEventListener('scroll', onScroll, true);
+      allFiles = []; matches = []; visibleFile = null; host = null;
+      stopReviewTools = () => {};
     };
   }
 
@@ -1115,7 +1204,7 @@
   // =====================================================================
   const PERF_TOGGLE_META = {
     hideAiUi: { group: 'dom', label: '隐藏 AI 组件', desc: '每页底部悬浮的 AtomCode dock、顶栏 AtomCode 按钮、工作台侧栏的 AtomCode 入口和「AI 开发与资源」分组。仅 CSS，不拦截网络请求。' },
-    pruneIconSprite: { group: 'dom', label: '裁剪图标雪碧图', desc: '暂存未使用的图标，出现引用时按需放回。实际净减少的 DOM 节点数见下方统计，收益随页面而变化。' },
+    pruneIconSprite: { group: 'dom', label: '裁剪图标雪碧图', desc: '未使用图标仅保存 SVG 文本，出现引用时按需恢复，减少保留的节点对象。下方节点数不等于节省的内存字节数。' },
     blockAiApi: { group: 'net', label: '拦截 AI 接口', desc: 'copilot-agent 会话/模型列表、token 用量、算力领取、AI review 检查。开启后 AI Agent 打不开。' },
     blockMarketing: { group: 'net', label: '拦截营销/活动请求', desc: '校园活动弹窗（含 2 张大图）、每日签到、用户调研、活动广告位、热搜词、积分商城，每页约 10 个请求。' },
     blockAnalytics: { group: 'net', label: '拦截埋点统计', desc: 'api/v1/report 行为上报（pageview 等）。' },
@@ -1237,7 +1326,8 @@
       body.appendChild(toggleRow('GitHub 风格', '保留原生背景和评论布局，仅调整字体、README 圆角及阴影', () => draft.theme.github, (v) => (draft.theme.github = v)));
 
       body.appendChild(h('h2', { text: '功能增强' }));
-      body.appendChild(toggleRow('PR 评论自动展开', '打开 PR 页后自动点开所有「此处折叠了 N 条消息」', () => draft.pr.autoExpand, (v) => (draft.pr.autoExpand = v)));
+      body.appendChild(toggleRow('PR 评论自动展开', '按下方范围自动展开折叠消息，关闭后仍可手动展开。', () => draft.pr.autoExpand, (v) => (draft.pr.autoExpand = v)));
+      body.appendChild(selectRow('评论展开范围', '默认仅展开阅读位置附近的折叠块，避免提前加载远处内容。单个折叠块仍由站点整体展开。', [['nearby', '阅读位置附近（省内存）'], ['all', '全部折叠消息']], () => draft.pr.expandMode, v => (draft.pr.expandMode = v)));
       body.appendChild(toggleRow('PR 文件评审工具', '文件改动页提供路径搜索、前后文件跳转和专注模式。专注模式默认关闭，离开该页后恢复。', () => draft.pr.reviewTools, (v) => (draft.pr.reviewTools = v)));
       body.appendChild(toggleRow('顶栏显示设置按钮', '页面右上角的齿轮图标，点开这个面板（也可以按 Alt+G，或用 Tampermonkey 菜单）', () => draft.ui.headerButton, (v) => (draft.ui.headerButton = v)));
       for (const [key, label] of [['floatingPosition', '悬浮设置按钮位置'], ['reviewPosition', '评审工具栏位置'], ['searchPosition', 'PR 查找栏位置']]) {
@@ -1393,11 +1483,14 @@
   installNetworkBlocking();
   if (settings.perf.pruneIconSprite) afterPageReady(installIconSpritePruner);
   applyStyles();
+  // Do not use html:has(...) here: every discussion mutation can invalidate
+  // document-wide styles, amplifying GitCode's synchronous FoldEllipsis reads.
+  // The review tool owns these flags and clears both when leaving the diff page.
   addStyle(`
-    html:has(#gce-review-tools[data-focus="true"]) .merge-head-title-wrap { display:none !important; }
-    html:has(#gce-review-tools[data-focus="true"]) .detail-main { padding-top:0 !important; }
-    html:has(#gce-review-tools[data-focus="true"]) .merge-detail-tabs-anchor { margin-top:0 !important; }
-    html:has(#gce-review-tools) .dfd-file { scroll-margin-top:220px; }
+    html.gce-review-focus .merge-head-title-wrap { display:none !important; }
+    html.gce-review-focus .detail-main { padding-top:0 !important; }
+    html.gce-review-focus .merge-detail-tabs-anchor { margin-top:0 !important; }
+    html.gce-review-page .dfd-file { scroll-margin-top:220px; }
   `);
   log(`v${VERSION} 已启动，性能档位：${settings.perf.level}`, JSON.stringify(settings));
   debug('started', document.readyState + ' level=' + settings.perf.level + ' prune=' + settings.perf.pruneIconSprite + ' unsafeWindow=' + (typeof unsafeWindow !== 'undefined'));
@@ -1413,7 +1506,7 @@
     lastPath = routeKey;
     cancelRouteWork(); stopDeclutter(); stopReviewTools(); cancelPRExpansion();
     closeDiffSearch();
-    diffSearchCache = null;
+    clearDiffCache();
     const target = dashboardRedirectTarget(path);
     if (target) { location.replace(target); return; }
     cancelRouteWork = afterPageReady(() => {

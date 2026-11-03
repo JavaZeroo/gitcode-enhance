@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 Thumbs.db
+# Local DevTools traces and captured third-party bundles (large, unsanitized).
+docs/performance/profiling-2026-11-03/
+# Local before-change source and intermediate browser measurements; curated results are tracked separately.
+docs/performance/memory-2026-11-03/
