@@ -364,3 +364,10 @@ test('incremental indexing yields and stops after cancellation', async () => {
   assert.equal([...lookup.get('b')].join(','),'old:8,new:9');
   assert.equal(hitLineLookup([]).size,0);
 });
+
+test('floating buttons default on and older saved settings gain the switches', () => {
+  const { settings } = harness().api;
+  assert.equal(settings.ui.floatingSettings, true);
+  assert.equal(settings.ui.backToTop, true);
+  assert.equal(settings.ui.floatingPosition, 'left-bottom');
+});
