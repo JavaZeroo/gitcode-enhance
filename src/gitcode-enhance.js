@@ -12,7 +12,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.4';
+  const VERSION = '0.3.5';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -101,7 +101,7 @@
     pr: { autoExpand: true, expandMode: 'nearby', reviewTools: true },
     // /dashboard 默认是 AI Agent 聊天页，打开 gitcode.com 也会跳到这里。改成落到工作台的某个真实页面。
     dashboard: { home: 'latest-activity' },
-    ui: { headerButton: true, floatingPosition: 'left-bottom', reviewPosition: 'right-bottom', searchPosition: 'right-top' },
+    ui: { headerButton: true, floatingSettings: true, backToTop: true, floatingPosition: 'left-bottom', reviewPosition: 'right-bottom', searchPosition: 'right-top' },
     perf: { level: 'light', ...PERF_PRESETS.light },
   };
 
@@ -1329,8 +1329,11 @@
       body.appendChild(toggleRow('PR 评论自动展开', '按下方范围自动展开折叠消息，关闭后仍可手动展开。', () => draft.pr.autoExpand, (v) => (draft.pr.autoExpand = v)));
       body.appendChild(selectRow('评论展开范围', '默认仅展开阅读位置附近的折叠块，避免提前加载远处内容。单个折叠块仍由站点整体展开。', [['nearby', '阅读位置附近（省内存）'], ['all', '全部折叠消息']], () => draft.pr.expandMode, v => (draft.pr.expandMode = v)));
       body.appendChild(toggleRow('PR 文件评审工具', '文件改动页提供路径搜索、前后文件跳转和专注模式。专注模式默认关闭，离开该页后恢复。', () => draft.pr.reviewTools, (v) => (draft.pr.reviewTools = v)));
-      body.appendChild(toggleRow('顶栏显示设置按钮', '页面右上角的齿轮图标，点开这个面板（也可以按 Alt+G，或用 Tampermonkey 菜单）', () => draft.ui.headerButton, (v) => (draft.ui.headerButton = v)));
-      for (const [key, label] of [['floatingPosition', '悬浮设置按钮位置'], ['reviewPosition', '评审工具栏位置'], ['searchPosition', 'PR 查找栏位置']]) {
+      body.appendChild(h('div', { class: 'sub', text: '设置入口' }));
+      body.appendChild(toggleRow('显示顶栏齿轮按钮', '页面右上角顶栏里的齿轮图标。关闭后仍可用悬浮设置按钮、Alt+G 或 Tampermonkey 菜单打开本面板。', () => draft.ui.headerButton, (v) => (draft.ui.headerButton = v)));
+      body.appendChild(toggleRow('显示悬浮设置按钮', '屏幕角落的「⚙ 设置」按钮。关闭后仍可用顶栏齿轮、Alt+G 或 Tampermonkey 菜单打开本面板。', () => draft.ui.floatingSettings, (v) => (draft.ui.floatingSettings = v)));
+      body.appendChild(toggleRow('显示回到顶部按钮', '与悬浮设置按钮同一位置的「↑ 顶部」按钮。', () => draft.ui.backToTop, (v) => (draft.ui.backToTop = v)));
+      for (const [key, label] of [['floatingPosition', '悬浮按钮位置'], ['reviewPosition', '评审工具栏位置'], ['searchPosition', 'PR 查找栏位置']]) {
         body.appendChild(selectRow(label, '选择屏幕上的展示位置，保存后生效。', FLOAT_POSITIONS, () => draft.ui[key], value => (draft.ui[key] = value)));
       }
       body.appendChild(selectRow('工作台首页', '打开 gitcode.com / 点「工作台」会落到 /dashboard 的 AI 聊天页，这里改成直接跳到工作台的某个页面', DASHBOARD_HOMES, () => draft.dashboard.home, (v) => (draft.dashboard.home = v)));
@@ -1379,9 +1382,16 @@
         body.appendChild(h('div', { class: 'd', text: '验证码 SDK 是 SSR HTML 里的 <script defer>，本页油猴注入得比 <head> 解析晚，没能阻止它执行。装 GreasyFork/GitHub 的正式版（非 file:// 开发加载器）通常注入更早。' }));
       }
 
+      // 每次改动都会重建内容区；保留其滚动位置和焦点，否则切换开关后会跳回面板顶部。
+      const CONTROLS = 'input, select, button';
+      const scrollTop = bodyEl ? bodyEl.scrollTop : 0;
+      const focused = bodyEl && root.activeElement && bodyEl.contains(root.activeElement)
+        ? Array.from(bodyEl.querySelectorAll(CONTROLS)).indexOf(root.activeElement) : -1;
       if (bodyEl) bodyEl.replaceWith(body);
       else panel.insertBefore(body, panel.lastChild);
       bodyEl = body;
+      body.scrollTop = scrollTop;
+      if (focused >= 0) body.querySelectorAll(CONTROLS)[focused]?.focus({ preventScroll: true });
     }
 
     panel = h('div', { class: 'panel' },
@@ -1408,7 +1418,8 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && panelHost) closePanel();
     // Alt+G 打开/关闭设置面板
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); openPanel(); }
+    // macOS 上 Option+G 的 e.key 是「©」，按物理键位判断。
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === 'KeyG' || e.key === 'g' || e.key === 'G')) { e.preventDefault(); openPanel(); }
   }, true);
 
   if (typeof GM_registerMenuCommand === 'function') {
@@ -1426,27 +1437,27 @@
       #${ID}:hover { background: var(--ui-bg, #f6f8fa); color: var(--theme-text, #1f2328); }
       #${ID} svg { width: 18px; height: 18px; }
     `);
-    let tries = 0;
-    const timer = setInterval(() => {
-      tries++;
-      if (document.getElementById(ID)) { clearInterval(timer); return; }
-      const bar = document.querySelector('.g-toolbar-right');
-      if (!bar) { if (tries > 40) clearInterval(timer); return; }
-      const btn = document.createElement('button');
-      btn.id = ID;
-      btn.type = 'button';
-      btn.title = 'GitCode Enhance 设置 (Alt+G)';
-      btn.setAttribute('aria-label', 'GitCode Enhance 设置');
-      btn.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.04.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"></path></svg>';
-      btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openPanel(); });
-      bar.insertBefore(btn, bar.firstChild);
-      clearInterval(timer);
-    }, 300);
+  }
+  // 站内切换布局时顶栏会重建，路由轮询里补插；只查一次 id 和一次选择器。
+  function ensureHeaderButton() {
+    const ID = 'gitcode-enhance-header-btn';
+    if (!settings.ui.headerButton || document.getElementById(ID)) return;
+    const bar = document.querySelector('.g-toolbar-right');
+    if (!bar) return;
+    const btn = document.createElement('button');
+    btn.id = ID;
+    btn.type = 'button';
+    btn.title = 'GitCode Enhance 设置 (Alt+G)';
+    btn.setAttribute('aria-label', 'GitCode Enhance 设置');
+    btn.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.04.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"></path></svg>';
+    btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openPanel(); });
+    bar.insertBefore(btn, bar.firstChild);
   }
   installHeaderButton();
 
   // 挂在 body 下的独立入口，不依赖站点顶栏，也不参与 Vue 管理的 DOM。
   function installFloatingSettings() {
+    if (!settings.ui.floatingSettings && !settings.ui.backToTop) return;
     if (!document.body || document.getElementById('gce-floating-settings')) return;
     const host = document.createElement('div'); host.id = 'gce-floating-settings';
     const root = host.attachShadow({ mode: 'open' });
@@ -1465,7 +1476,10 @@
     button.addEventListener('click', openPanel);
     const top = document.createElement('button'); top.type = 'button'; top.textContent = '↑ 顶部';
     top.setAttribute('aria-label', '回到页面顶部'); top.title = '回到页面顶部'; top.addEventListener('click', backToTop);
-    root.append(style, button, top); document.body.appendChild(host);
+    root.append(style);
+    if (settings.ui.floatingSettings) root.append(button);
+    if (settings.ui.backToTop) root.append(top);
+    document.body.appendChild(host);
   }
 
   // =====================================================================
@@ -1499,7 +1513,7 @@
   let lastPath = '';
   let cancelRouteWork = () => {};
   function onRouteChange() {
-    installFloatingSettings();
+    installFloatingSettings(); ensureHeaderButton();
     const path = location.pathname;
     const routeKey = path + location.search;
     if (routeKey === lastPath) return;

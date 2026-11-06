@@ -28,7 +28,7 @@ let header = `// ==UserScript==
 // @license      MIT
 // @homepageURL  https://github.com/JavaZeroo/gitcode-enhance
 // @supportURL   https://github.com/JavaZeroo/gitcode-enhance/issues
-// @updateURL    https://raw.githubusercontent.com/JavaZeroo/gitcode-enhance/main/gitcode-enhance.user.js
+// @updateURL    https://raw.githubusercontent.com/JavaZeroo/gitcode-enhance/main/gitcode-enhance.meta.js
 // @downloadURL  https://raw.githubusercontent.com/JavaZeroo/gitcode-enhance/main/gitcode-enhance.user.js
 // ==/UserScript==
 
@@ -37,6 +37,8 @@ let header = `// ==UserScript==
 const body = readFileSync(join(root, 'src', 'gitcode-enhance.js'), 'utf8');
 
 writeFileSync(join(root, 'gitcode-enhance.user.js'), header + body);
+// Tampermonkey checks @updateURL first; a header-only file keeps update checks small.
+writeFileSync(join(root, 'gitcode-enhance.meta.js'), header.trimEnd() + '\n');
 // Greasy Fork manages updates for its own distribution.
 writeFileSync(join(root, 'gitcode-enhance.greasyfork.user.js'), header.replace(/^\/\/ @(?:updateURL|downloadURL).*\n/gm, '' ) + body);
 
