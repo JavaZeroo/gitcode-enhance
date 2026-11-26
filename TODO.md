@@ -1,6 +1,6 @@
 # 开发与维护待办
 
-当前 GitHub 发布：v0.3.4，Greasy Fork 待同步，见[发布记录](docs/releases/v0.3.4.md)。下一版的范围、依赖、验收和测量方案统一维护在 [ROADMAP.md](ROADMAP.md)，避免多份计划漂移。
+当前 GitHub 主分支安装版为 v0.3.5。Greasy Fork 的当前版本见[脚本条目](https://greasyfork.org/zh-CN/scripts/596921)。下一版的范围、依赖、验收和测量方案统一维护在 [ROADMAP.md](ROADMAP.md)，避免多份计划漂移。
 
 ## v0.4.0
 

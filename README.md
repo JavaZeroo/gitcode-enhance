@@ -2,7 +2,7 @@
 
 非官方的 [gitcode.com](https://gitcode.com)（AtomGit）增强油猴脚本：去广告、GitHub 风格美化、基于实测的分级性能优化、PR 评论自动展开，自带可视化设置面板。
 
-当前 GitHub 发布版本：**v0.3.4**。Greasy Fork 同步状态见 [v0.3.4 发布记录](docs/releases/v0.3.4.md)。下一版计划见 [v0.4.0 路线图](ROADMAP.md)，维护待办见 [TODO](TODO.md)。路线图中的功能尚未发布。
+GitHub 主分支安装版：**v0.3.5**。PR 评审工具栏首次展开时才创建文件下拉选项，切换文件时复用列表。下一版计划见 [v0.4.0 路线图](ROADMAP.md)，维护待办见 [TODO](TODO.md)。
 
 ## 安装
 

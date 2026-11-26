@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.4
+// @version      0.3.5
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -35,7 +35,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.4';
+  const VERSION = '0.3.5';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -1076,8 +1076,9 @@
   function installReviewTools() {
     stopReviewTools();
     if (!settings.pr.reviewTools || !/^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) return;
-    let host = null, root = null, timer = null, signature = '', selected = '';
-    let query, picker, previous, next, count, focus, current, feedback;
+    let host = null, root = null, timer = null, selected = '';
+    let query, picker, previous, next, count, focus, current, feedback, details;
+    let optionsDirty = true;
     let scrollTimer = null, visibleFile = null;
     let allFiles = [], matches = [];
     function button(text, action) {
@@ -1090,40 +1091,46 @@
       if (!file) return;
       selected = file.id;
       file.node.scrollIntoView({ block: 'start', behavior: 'auto' });
-      render();
+      updateSelection(index);
       trackCurrent();
     }
     function trackCurrent() {
-      scrollTimer = null;
-      if (!current || !allFiles.length) return;
+      if (!current) return;
       // 兼容页面滚动和站点内部滚动容器，不假定 window.scrollY。
-      visibleFile = allFiles.find(f => f.node.getBoundingClientRect().bottom > 221) || allFiles[allFiles.length - 1];
-      current.textContent = visibleFile.path;
-      current.title = visibleFile.path;
+      visibleFile = allFiles.find(f => f.node.getBoundingClientRect().bottom > 221) || allFiles.at(-1);
+      const path = visibleFile?.path || '';
+      if (current.textContent !== path) {
+        current.textContent = path;
+        current.title = path;
+      }
       // 搜索时保留用户选中的匹配项；无筛选时让前后跳转跟随当前阅读位置。
-      if (!query.value.trim() && root.activeElement !== picker && selected !== visibleFile.id) {
+      if (visibleFile && !query.value.trim() && root.activeElement !== picker && selected !== visibleFile.id) {
         selected = visibleFile.id;
-        picker.value = selected;
-        const index = matches.findIndex(f => f.id === selected);
-        previous.disabled = index <= 0; next.disabled = index < 0 || index >= matches.length - 1;
-        count.textContent = `${index + 1} / ${matches.length}（共 ${allFiles.length}）`;
+        if (!details.hidden) updateSelection(matches.findIndex(f => f.id === selected));
       }
     }
     function onScroll() {
-      if (scrollTimer === null) scrollTimer = setTimeout(trackCurrent, 100);
+      if (scrollTimer === null) scrollTimer = setTimeout(() => {
+        scrollTimer = null;
+        trackCurrent();
+      }, 100);
     }
-    function render() {
+    function renderOptions() {
       const needle = query.value.trim().toLowerCase();
-      matches = allFiles.filter(f => f.path.toLowerCase().includes(needle));
+      matches = needle ? allFiles.filter(f => f.path.toLowerCase().includes(needle)) : allFiles;
       if (!matches.some(f => f.id === selected)) selected = matches[0]?.id || '';
-      picker.replaceChildren();
+      const options = document.createDocumentFragment();
       for (const f of matches) {
         const option = document.createElement('option');
-        option.value = f.id; option.textContent = f.path; picker.appendChild(option);
+        option.value = f.id; option.textContent = f.path; options.appendChild(option);
       }
-      picker.value = selected;
+      picker.replaceChildren(options);
+      optionsDirty = false;
       picker.disabled = !matches.length;
-      const index = matches.findIndex(f => f.id === selected);
+      updateSelection(matches.findIndex(f => f.id === selected));
+    }
+    function updateSelection(index) {
+      picker.value = selected;
       previous.disabled = index <= 0;
       next.disabled = index < 0 || index >= matches.length - 1;
       count.textContent = matches.length ? `${index + 1} / ${matches.length}（共 ${allFiles.length}）` : '没有匹配文件';
@@ -1131,7 +1138,7 @@
     function refresh() {
       timer = null;
       const main = document.querySelector('.dfd-main');
-      if (!main) return;
+      if (!main && !host?.isConnected) return;
       if (!host || !host.isConnected) {
         host?.remove();
         host = document.createElement('div'); host.id = 'gce-review-tools';
@@ -1161,7 +1168,7 @@
         const bar = document.createElement('div'); bar.className = 'bar';
         bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'PR 评审工具');
         query = document.createElement('input'); query.type = 'search'; query.placeholder = '搜索文件路径';
-        query.setAttribute('aria-label', '搜索评审文件'); query.addEventListener('input', render);
+        query.setAttribute('aria-label', '搜索评审文件'); query.addEventListener('input', renderOptions);
         picker = document.createElement('select'); picker.setAttribute('aria-label', '跳转到评审文件');
         picker.addEventListener('change', () => navigate(matches.findIndex(f => f.id === picker.value)));
         previous = button('上一文件', () => navigate(matches.findIndex(f => f.id === selected) - 1));
@@ -1177,9 +1184,13 @@
         current = document.createElement('span'); current.className = 'current';
         const heading = document.createElement('div'); heading.className = 'heading';
         const label = document.createElement('strong'); label.textContent = '正在阅读';
-        const details = document.createElement('div'); details.className = 'details'; details.id = 'review-details'; details.hidden = true;
+        details = document.createElement('div'); details.className = 'details'; details.id = 'review-details'; details.hidden = true;
         const collapse = button('展开工具', () => {
           details.hidden = !details.hidden;
+          if (!details.hidden) {
+            if (optionsDirty) renderOptions();
+            else updateSelection(matches.findIndex(f => f.id === selected));
+          }
           collapse.textContent = details.hidden ? '展开工具' : '收起工具';
           collapse.setAttribute('aria-expanded', String(!details.hidden));
         });
@@ -1194,14 +1205,18 @@
         const contentSearch = button('查找差异 Ctrl+F', openDiffSearch);
         details.append(query, picker, previous, next, count, focus, contentSearch, copy, feedback);
         bar.append(heading, details); root.append(style, bar); document.body.appendChild(host);
-        signature = '';
+        optionsDirty = true;
       }
-      const files = Array.from(main.querySelectorAll('.dfd-file[id]')).map(node => ({
+      const files = Array.from(main?.querySelectorAll('.dfd-file[id]') || []).map(node => ({
         node, id: node.id, path: node.querySelector('.dfd-path-new')?.textContent.trim() || node.id.replace(/^mr_/, ''),
       }));
-      const key = JSON.stringify(files.map(f => [f.id, f.path]));
-      allFiles = files;
-      if (signature !== key) { signature = key; render(); }
+      if (files.length !== allFiles.length || files.some((file, i) =>
+        file.node !== allFiles[i].node || file.id !== allFiles[i].id || file.path !== allFiles[i].path)) {
+        allFiles = files;
+        matches = [];
+        optionsDirty = true;
+      }
+      if (!details.hidden && optionsDirty) renderOptions();
       trackCurrent();
     }
     const observer = new MutationObserver(records => {
