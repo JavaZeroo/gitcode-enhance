@@ -40,7 +40,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { settings, selectedDiffText, readBlobText, sourceContextRows, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { settings, handleCommentShortcut, selectedDiffText, readBlobText, sourceContextRows, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) {
@@ -461,4 +461,30 @@ test('Ctrl+F only consumes a nonblank single-line selection inside diff code', (
   code = false; text = 'a comment';
   assert.equal(api.selectedDiffText(), '');
   assert.equal(consumed, 1);
+});
+
+test('comment submit keys use the active PR editor and do not submit twice or during IME', () => {
+  const { api } = harness('/a/b/pull/1/diffs');
+  let clicks = 0, inline = false;
+  const button = {click() { clicks++; }, getAttribute: () => null, getClientRects: () => [{}]};
+  const editor = {closest: () => inline, querySelectorAll: () => [button]};
+  const target = {closest: () => ({closest: () => editor})};
+  function press(extra = {}) {
+    let consumed = false;
+    api.handleCommentShortcut({key:'Enter', ctrlKey:true, metaKey:false, composedPath:() => [target],
+      preventDefault() { consumed = true; }, stopPropagation() {}, ...extra});
+    return consumed;
+  }
+  assert.ok(press());
+  assert.ok(press({ctrlKey:false,metaKey:true}));
+  assert.ok(!press({shiftKey:true}));
+  inline = true;
+  assert.ok(press({shiftKey:true}));
+  assert.ok(!press({altKey:true}));
+  assert.ok(!press({isComposing:true}));
+  assert.ok(!press({defaultPrevented:true}));
+  assert.ok(press({repeat:true}));
+  button.disabled = true;
+  assert.ok(press());
+  assert.equal(clicks,3);
 });

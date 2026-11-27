@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.11
+// @version      0.3.13
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -33,7 +33,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.11';
+  const VERSION = '0.3.13';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -1152,7 +1152,7 @@
     const previous = labeledButton('↑', '上一处'), next = labeledButton('↓', '下一处');
     previous.addEventListener('click', () => move(-1)); next.addEventListener('click', () => move(1));
     input.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && !composing && !event.isComposing && event.keyCode !== 229) {
+      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !composing && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault(); move(event.shiftKey ? -1 : 1);
       }
     });
@@ -1401,7 +1401,7 @@
     }
     closeDiffSearch = cleanup;
     function escape(event) {
-      if (event.key === 'Escape' && !composing && !event.isComposing && event.keyCode !== 229) {
+      if (event.key === 'Escape' && !isExternalEditor(event) && !composing && !event.isComposing && event.keyCode !== 229) {
         event.stopPropagation(); cleanup();
       }
     }
@@ -1677,9 +1677,32 @@
     })();
   }
 
+  function isExternalEditor(event) {
+    if (event.target?.id === 'gce-diff-search') return false;
+    const target = event.composedPath()[0];
+    return target?.isContentEditable || !!target?.closest?.('input, textarea, select, [role="textbox"]');
+  }
+
+  function handleCommentShortcut(event) {
+    if (event.key !== 'Enter' || event.altKey || event.ctrlKey === event.metaKey ||
+        event.defaultPrevented || event.isComposing || event.keyCode === 229 || !settings.pr.reviewTools) return;
+    if (!/^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/(?:discuss|diffs))?\/?$/.test(location.pathname)) return;
+    const target = event.composedPath()[0];
+    const editor = target?.closest?.('.cm-content[contenteditable="true"]')?.closest('.comment-editor');
+    if (!editor || (event.shiftKey && !editor.closest('.dft-comment-cell'))) return;
+    // 站点的 CodeMirror 默认 Mod-Enter 会插入空行。只触发当前评论框自己的提交按钮。
+    const actions = editor.querySelectorAll('.comment-editor__submit > button:not(.cancel-btn)');
+    if (actions.length !== 1) return;
+    const submit = actions[0];
+    event.preventDefault(); event.stopPropagation();
+    if (!event.repeat && !submit.disabled && submit.getAttribute('aria-disabled') !== 'true' &&
+        submit.getAttribute('aria-busy') !== 'true' && submit.getClientRects().length) submit.click();
+  }
+  document.addEventListener('keydown', handleCommentShortcut, true);
+
   document.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f'
-        && settings.pr.reviewTools && /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) {
+        && !event.defaultPrevented && !isExternalEditor(event) && settings.pr.reviewTools && /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) {
       event.preventDefault(); event.stopImmediatePropagation(); openDiffSearch();
     }
   }, true);
@@ -1716,11 +1739,30 @@
     return Math.min(low, files.length - 1);
   }
 
+  // GitCode 在“?”面板中保存单字符快捷键偏好，浏览器本地和站点 cookie 各有一份。
+  function characterShortcutsEnabled() {
+    const key = 'atomgit.character-shortcuts';
+    let latest = null;
+    function consider(raw) {
+      try {
+        const pref = JSON.parse(raw);
+        if (!pref || !['on', 'off'].includes(pref.value) || !Number.isSafeInteger(pref.updatedAt) || pref.updatedAt < 0) return;
+        if (!latest || pref.updatedAt > latest.updatedAt || (pref.updatedAt === latest.updatedAt && pref.value === 'off')) latest = pref;
+      } catch { /* 忽略过期格式 */ }
+    }
+    try { consider(localStorage.getItem(key)); } catch { /* 存储不可用 */ }
+    try {
+      const value = document.cookie.match(/(?:^|;\s*)atomgit\.character-shortcuts=([^;]*)/);
+      if (value) consider(decodeURIComponent(value[1]));
+    } catch { /* cookie 不可用 */ }
+    return latest?.value !== 'off';
+  }
+
   function installReviewTools() {
     stopReviewTools();
     if (!settings.pr.reviewTools || !/^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) return;
     let host = null, root = null, timer = null, selected = '';
-    let query, picker, previous, next, count, focus, current, feedback, details;
+    let query, picker, previous, next, count, focus, current, feedback, details, collapse;
     let optionsDirty = true;
     let scrollTimer = null, visibleFile = null, visibleIndex = -1;
     let allFiles = [], matches = [];
@@ -1728,6 +1770,23 @@
       const el = document.createElement('button');
       el.type = 'button'; el.textContent = text; el.addEventListener('click', action);
       return el;
+    }
+    function focusFileFilter(event) {
+      if (event.key.toLowerCase() !== 't' || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
+          event.repeat || event.defaultPrevented || event.isComposing || event.keyCode === 229 || !host?.isConnected) return;
+      if (!/\/diffs\/?$/.test(location.pathname) || isExternalEditor(event) ||
+          document.getElementById('gce-diff-search') || document.getElementById('gitcode-enhance-panel-host')) return;
+      const overlays = document.querySelectorAll('dialog[open], [role="dialog"], [role="listbox"], [role="menu"]');
+      if (Array.from(overlays).some(node => node.getClientRects().length) || !characterShortcutsEnabled()) return;
+      event.preventDefault();
+      const native = document.querySelector('button.dfd-tree-search');
+      if (native?.getClientRects().length && !native.disabled && native.getAttribute('aria-disabled') !== 'true') {
+        native.click();
+        return;
+      }
+      if (details.hidden) collapse.click();
+      query.focus({preventScroll:true});
+      query.select();
     }
     function navigate(index) {
       const file = matches[index];
@@ -1862,6 +1921,8 @@
         const bar = document.createElement('div'); bar.className = 'bar';
         bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'PR 评审工具');
         query = document.createElement('input'); query.type = 'search'; query.placeholder = '搜索文件路径';
+        query.title = '搜索文件路径（T）';
+        query.setAttribute('aria-keyshortcuts', 'T');
         query.setAttribute('aria-label', '搜索评审文件'); query.addEventListener('input', renderOptions);
         picker = document.createElement('select'); picker.setAttribute('aria-label', '跳转到评审文件');
         picker.addEventListener('change', () => navigate(matches.findIndex(f => f.id === picker.value)));
@@ -1885,7 +1946,7 @@
         const heading = document.createElement('div'); heading.className = 'heading';
         const label = document.createElement('strong'); label.textContent = '正在阅读';
         details = document.createElement('div'); details.className = 'details'; details.id = 'review-details'; details.hidden = true;
-        const collapse = button('展开工具', () => {
+        collapse = button('展开工具', () => {
           details.hidden = !details.hidden;
           if (!details.hidden) {
             if (optionsDirty) renderOptions();
@@ -1926,12 +1987,14 @@
       if ((!host?.isConnected || filesChanged) && timer === null) timer = setTimeout(refresh, 150);
     });
     observer.observe(document, { childList: true, subtree: true });
+    W.addEventListener('keydown', focusFileFilter);
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     refresh();
     stopReviewTools = () => {
       blockRequest++; blockTarget?.classList.remove('gce-block-target'); blockTarget = null;
       observer.disconnect(); clearTimeout(timer); clearTimeout(scrollTimer); host?.remove();
       document.documentElement.classList.remove('gce-review-page', 'gce-review-focus');
+      W.removeEventListener('keydown', focusFileFilter);
       document.removeEventListener('scroll', onScroll, true);
       allFiles = []; matches = []; visibleFile = null; host = null;
       stopReviewTools = () => {};
@@ -2147,7 +2210,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && panelHost) closePanel();
     // Alt+G 打开/关闭设置面板
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); openPanel(); }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.defaultPrevented && !isExternalEditor(e) && e.key.toLowerCase() === 'g') { e.preventDefault(); openPanel(); }
   }, true);
 
   if (typeof GM_registerMenuCommand === 'function') {
