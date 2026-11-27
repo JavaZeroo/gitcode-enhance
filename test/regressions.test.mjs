@@ -40,7 +40,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { settings, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { settings, selectedDiffText, readBlobText, sourceContextRows, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) {
@@ -424,4 +424,41 @@ test('loading a partial diff preserves order and both sides of replacements', ()
   const c = {kind:'+', oldLine:null, newLine:5}, d = {kind:' ', oldLine:8, newLine:8};
   assert.deepEqual(Array.from(mergeDiffRows([a,b,c],[b,c,d])),[a,b,c,d]);
   assert.deepEqual(Array.from(mergeDiffRows([b,c,d],[a,b,c])),[a,b,c,d]);
+});
+
+test('unexpanded head lines keep CRLF numbering and stay out of changes-only results', () => {
+  const { sourceContextRows, searchDiffRows, hitLineLookup } = harness().api;
+  const rows = sourceContextRows('same\r\nnew\r\nfolded needle\r\n', [{newLine:1},{newLine:null},{newLine:2}], 1);
+  assert.deepEqual(Array.from(rows, r => [r.newLine,r.text]),[[3,'folded needle']]);
+  const files = [{path:'a',rows}];
+  assert.equal(searchDiffRows(files,'needle',false,true).length,0);
+  assert.deepEqual(Array.from(hitLineLookup(searchDiffRows(files,'needle')).get('a')),['new:3']);
+  assert.throws(() => sourceContextRows('a\nb',[],1));
+});
+
+test('full text must come from the selected path and revision and be available in the blob viewer', () => {
+  const {readBlobText} = harness().api;
+  const tables = [{'blob:o/r:abc:a':1},{raw:2,analyzed:3,isLimited:4,auditStatus:5,plainContent:6},
+    {path:7,ref:8},{isBinary:4,isLfs:4},false,0,'example','a','abc'];
+  const read = () => readBlobText(JSON.stringify(tables),'o/r','abc','a');
+  assert.equal(read(),'example');
+  tables[8] = 'different'; assert.equal(read(),null); tables[8] = 'abc';
+  tables[4] = true; assert.equal(read(),null); tables[4] = false;
+  tables[5] = 1; assert.equal(read(),null);
+});
+
+test('Ctrl+F only consumes a nonblank single-line selection inside diff code', () => {
+  const {api, context} = harness();
+  let code = true, text = 'variable', consumed = 0;
+  const parentElement = {closest: () => code ? parentElement : null};
+  context.getSelection = () => ({
+    rangeCount: 1, isCollapsed: false, toString: () => text,
+    getRangeAt: () => ({commonAncestorContainer: {nodeType: 3, parentElement}}),
+    removeAllRanges: () => consumed++,
+  });
+  assert.equal(api.selectedDiffText(), 'variable');
+  for (text of ['a\nb', 'a\rb', '   ']) assert.equal(api.selectedDiffText(), '');
+  code = false; text = 'a comment';
+  assert.equal(api.selectedDiffText(), '');
+  assert.equal(consumed, 1);
 });

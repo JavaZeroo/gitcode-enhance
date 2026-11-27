@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.9
+// @version      0.3.11
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -33,7 +33,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.9';
+  const VERSION = '0.3.11';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -95,8 +95,8 @@
     for (const { file, row } of hits) {
       if (!files.has(file.path)) files.set(file.path, new Set());
       const lines = files.get(file.path);
-      if (row.kind !== '+') lines.add('old:' + row.oldLine);
-      if (row.kind !== '-') lines.add('new:' + row.newLine);
+      if (row.oldLine != null) lines.add('old:' + row.oldLine);
+      if (row.newLine != null) lines.add('new:' + row.newLine);
     }
     return files;
   }
@@ -713,7 +713,7 @@
       if (!f || typeof f !== 'object') throw new Error('文件差异格式发生变化');
       return {
         path: value(f.filePath) || value(f.newPath) || value(f.oldPath),
-        diff: value(f.diff), binary: !!value(f.binary), tooLarge: !!value(f.tooLarge),
+        type: value(f.type), diff: value(f.diff), binary: !!value(f.binary), tooLarge: !!value(f.tooLarge),
         collapsed: !!value(f.collapsed), isEmpty: !!value(f.isEmpty),
         addedLines: value(f.addedLines), removedLines: value(f.removedLines),
       };
@@ -871,6 +871,9 @@
         else if (!row) node.querySelectorAll(contextRowSelector).forEach(item => rows.add(item));
       }
     }
+    rememberContextRows(rows, true);
+  }
+  function rememberContextRows(rows, notify) {
     let changed = false;
     const sources = new Map();
     for (const row of rows) {
@@ -896,7 +899,7 @@
       source.rows.set(newLine, { oldLine, newLine, text, lowerText: text.toLowerCase(), kind: ' ', expanded: true });
       changed = true;
     }
-    if (changed) refreshExpandedSearch();
+    if (changed && notify) refreshExpandedSearch();
   }
   // 站点可能只渲染原始 patch 的一部分。保留旧/新行坐标，合并时避免复制并排上下文。
   function mergeDiffRows(original, rendered) {
@@ -1015,6 +1018,47 @@
     }
     return { indexed: [...byPath.values()], added };
   }
+  // 文件页公开的文本必须对应 PR 头提交和当前路径。
+  function readBlobText(serialized, repo, commit, path) {
+    const table = JSON.parse(serialized);
+    const key = `blob:${repo}:${commit}:${path}`;
+    const entry = table.find(v => v && Object.hasOwn(v, key));
+    const blob = entry && table[entry[key]], raw = blob && table[blob.raw], info = blob && table[blob.analyzed];
+    if (!raw || !info || table[raw.path] !== path || table[raw.ref] !== commit ||
+        table[blob.isLimited] || table[blob.auditStatus] || table[info.isBinary] || table[info.isLfs]) return null;
+    const text = table[blob.plainContent];
+    return typeof text === 'string' ? text : null;
+  }
+  function sourceContextRows(text, patchRows, available) {
+    const known = new Set(patchRows.map(row => row.newLine));
+    const lines = text.split('\n');
+    if (lines.at(-1) === '') lines.pop();
+    const extra = [];
+    for (let index = 0; index < lines.length; index++) {
+      if (known.has(index + 1)) continue;
+      if (extra.length >= available) throw new Error('全文索引容量已满');
+      const text = lines[index].replace(/\r$/, '');
+      extra.push({kind:' ', oldLine:null, newLine:index + 1, text, lowerText:text.toLowerCase(), source:true});
+    }
+    return extra;
+  }
+
+  function contextButtonForLine(file, line) {
+    for (const button of file.querySelectorAll('.dft-expand-btn')) {
+      const gap = button.closest('tr');
+      if (!gap) continue;
+      let prev = gap.previousElementSibling, next = gap.nextElementSibling;
+      while (prev && !prev.hasAttribute('data-new-line')) prev = prev.previousElementSibling;
+      while (next && !next.hasAttribute('data-new-line')) next = next.nextElementSibling;
+      const start = Number(prev?.dataset.newLine || 0), end = Number(next?.dataset.newLine || Infinity);
+      if (line <= start || line >= end) continue;
+      const action = button.getAttribute('aria-label') || '';
+      if (/all|全部/i.test(action) || (/down|下/i.test(action) && line - start <= 20) ||
+          (/up|上/i.test(action) && end - line <= 20)) return button;
+    }
+    return null;
+  }
+
   let diffSearchCache = null;
   let diffCacheTimer = null;
   function clearDiffCache() {
@@ -1024,9 +1068,20 @@
     clearTimeout(diffCacheTimer);
     diffCacheTimer = setTimeout(clearDiffCache, 60000);
   }
+  function selectedDiffText() {
+    const selection = W.getSelection();
+    if (!selection?.rangeCount || selection.isCollapsed) return '';
+    const node = selection.getRangeAt(0).commonAncestorContainer;
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    const text = selection.toString();
+    if (!element?.closest('.dfd-file .dft-code-ctn') || !text.trim() || /[\r\n]/.test(text)) return '';
+    selection.removeAllRanges();
+    return text;
+  }
   function openDiffSearch() {
+    const selection = selectedDiffText();
     const existing = document.getElementById('gce-diff-search');
-    if (existing) { refocusDiffSearch(); return; }
+    if (existing) { refocusDiffSearch(selection); return; }
     closeDiffSearch();
     clearTimeout(diffCacheTimer); diffCacheTimer = null;
     const url = location.href, path = location.pathname;
@@ -1036,6 +1091,7 @@
     const route = path + location.search;
     const comparison = route + ':' + (bookmark?.commit || '');
     const memory = bookmark?.commit && searchMemory?.key === comparison ? searchMemory : null;
+    const opener = document.activeElement?.shadowRoot?.activeElement || document.activeElement;
     const host = document.createElement('div'); host.id = 'gce-diff-search';
     const root = host.attachShadow({ mode: 'open' });
     const controller = new W.AbortController();
@@ -1046,51 +1102,154 @@
     const style = el('style'); style.textContent = `
       :host { color-scheme:light; } :host-context(html.dark),:host-context(html[data-theme="black"]) { color-scheme:dark; }
       * { box-sizing:border-box; } .backdrop { position:fixed; ${floatingStyle(settings.ui.searchPosition, 'right-top')} z-index:2147482900; max-width:calc(100vw - 32px); }
-      .panel { width:min(560px,calc(100vw - 32px)); max-height:55vh; display:flex; flex-direction:column; gap:12px; padding:18px;
-        background:var(--ui-bg,#fff); color:var(--theme-text,#1f2328); border:1px solid var(--ui-border,#d1d9e0); border-radius:10px; font:14px system-ui,sans-serif; }
-      .head,.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; } h2 { font-size:17px; margin:0; flex:1; }
-      input[type=search] { min-width:150px; flex:1; } input,button { font:inherit; color:inherit; background:var(--theme-default-ui-bg,#fff); border:1px solid var(--ui-border,#d1d9e0); border-radius:5px; padding:7px; }
-      button { cursor:pointer; } button:disabled { opacity:.5; cursor:default; } .results { overflow:auto; min-height:80px; }
-      .hit { width:100%; display:block; text-align:left; margin-bottom:8px; padding:10px; }
-      .hit:hover { border-color:#0969da; } .code { white-space:pre-wrap; overflow-wrap:anywhere; font:13px ui-monospace,monospace; margin-top:6px; }
+      .panel { width:clamp(475px,55vw,560px); max-width:calc(100vw - 32px); max-height:min(65vh,calc(100vh - 166px)); overflow:auto; padding:7px;
+        background:var(--ui-bg,#fff); color:var(--theme-text,#1f2328); border:1px solid var(--ui-border,#d1d9e0); border-radius:8px; font:13px system-ui,sans-serif; }
+      .controls,.filters { display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
+      input,select,button { font:inherit; color:inherit; background:var(--theme-default-ui-bg,#fff); border:1px solid var(--ui-border,#d1d9e0); border-radius:5px; padding:4px 6px; }
+      input[type=search] { width:clamp(100px,15vw,190px); flex:1 1 100px; min-width:80px; }
+      button { cursor:pointer; } button:disabled { opacity:.5; cursor:default; } button[aria-pressed=true] { border-color:#0969da; }
+      .controls button { white-space:nowrap; min-height:28px; } .controls [role=status] { font-size:12px; overflow-wrap:anywhere; }
+      .drawer { border-top:1px solid var(--ui-border,#d1d9e0); margin-top:7px; padding-top:7px; }
+      [hidden] { display:none !important; } .drawer select { width:100%; margin:7px 0; }
+      .hit { width:100%; display:block; text-align:left; margin-bottom:4px; }
+      .hit:hover { border-color:#0969da; } .code { white-space:pre-wrap; overflow-wrap:anywhere; font:13px ui-monospace,monospace; }
       .info { font-size:12px; color:var(--ui-text-dimmed,#59636e); } mark { background:#f0c040; color:#161616; }
+      @media(max-width:640px) {
+        .controls {gap:3px;} .controls button {padding-inline:4px;}
+        input[type=search] {width:100px; min-width:64px; flex-basis:64px;}
+      }
+      @media(max-height:340px) { .backdrop {top:8px;bottom:auto;transform:none;} .panel {max-height:calc(100vh - 16px);} }
     `;
     const backdrop = el('div'); backdrop.className = 'backdrop';
     const panel = el('section'); panel.className = 'panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'PR 差异内容搜索'); panel.setAttribute('aria-modal', 'false');
-    const heading = el('div'); heading.className = 'head';
-    const close = el('button', '关闭搜索'); close.type = 'button';
-    const back = el('button', '返回搜索前位置'); back.hidden = true;
-    heading.append(el('h2', '查找 PR 差异 · Ctrl+F'), back, close);
+    function labeledButton(text, label) {
+      const button = el('button', text); button.type = 'button';
+      button.title = label; button.setAttribute('aria-label', label);
+      return button;
+    }
+    const close = labeledButton('×', '关闭搜索');
+    const back = labeledButton('↩', '返回搜索前位置'); back.hidden = true;
     const controls = el('div'); controls.className = 'controls';
-    const input = el('input'); input.type = 'search'; input.placeholder = '搜索全部文件的差异内容'; input.setAttribute('aria-label', '差异内容关键词');
+    const input = el('input'); input.type = 'search'; input.placeholder = '搜索 PR 改动文件中的代码'; input.setAttribute('aria-label', '差异内容关键词');
     const sensitive = el('input'); sensitive.type = 'checkbox';
-    const changes = el('input'); changes.type = 'checkbox';
-    input.value = lastInput = memory?.text || '';
-    sensitive.checked = !!memory?.sensitive; changes.checked = !!memory?.changes;
+    let onlyChanges = !!memory?.changes;
+    input.value = lastInput = selection || memory?.text || '';
+    sensitive.checked = !!memory?.sensitive;
     const caseLabel = el('label', '区分大小写 '); caseLabel.appendChild(sensitive);
-    const changeLabel = el('label', '仅新增/删除行 '); changeLabel.appendChild(changes);
-    const previous = el('button', '上一处'), next = el('button', '下一处');
-    previous.type = next.type = 'button';
+    const scopeButton = el('button');
+    function updateScopeButton() {
+      scopeButton.textContent = onlyChanges ? '仅改动行' : '含未改动代码';
+      scopeButton.title = onlyChanges ? '切换到包含未改动代码' : '切换到仅新增/删除行';
+      scopeButton.setAttribute('aria-pressed', String(onlyChanges));
+    }
+    updateScopeButton();
+    function setScope(value) {
+      onlyChanges = value; pendingMove = 0;
+      updateScopeButton(); updateSourceStatus();
+      input.focus({preventScroll:true}); search(true);
+    }
+    scopeButton.addEventListener('click', () => setScope(!onlyChanges));
+    const previous = labeledButton('↑', '上一处'), next = labeledButton('↓', '下一处');
     previous.addEventListener('click', () => move(-1)); next.addEventListener('click', () => move(1));
     input.addEventListener('keydown', event => {
       if (event.key === 'Enter' && !composing && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault(); move(event.shiftKey ? -1 : 1);
       }
     });
-    controls.append(input, previous, next, caseLabel, changeLabel);
+
     const coverage = el('div', '正在准备差异索引，可先输入关键词…'); coverage.className = 'info';
     const scope = el('details'); scope.className = 'info';
     const scopeLabel = el('summary', '查看搜索范围'); const issues = el('div');
     issues.style.cssText = 'max-height:14vh;overflow:auto;white-space:pre-line'; scope.append(scopeLabel, issues); scope.hidden = true;
     const summary = el('div'); summary.setAttribute('role', 'status');
     const results = el('div'); results.className = 'results';
-    const hint = el('div', '搜索 diff 和本页手动展开过的上下文。Enter 下一处，Shift+Enter 上一处，Esc 关闭。'); hint.className = 'info';
-    panel.append(heading, controls, coverage, scope, hint, summary, results); backdrop.appendChild(panel); root.append(style, backdrop); document.body.appendChild(host);
+    const sourceStatus = el('div'); sourceStatus.className = 'info';
+    const drawer = el('div'); drawer.className = 'drawer'; drawer.id = 'search-results'; drawer.hidden = true;
+    const toggle = labeledButton('结果', '搜索结果与选项'); toggle.setAttribute('aria-controls', drawer.id);
+    const group = el('select'); group.setAttribute('aria-label', '按文件查看匹配行'); group.hidden = true;
+    const more = el('button', '显示更多匹配行'); more.hidden = true;
+    const broaden = el('button', '搜索未改动代码'); broaden.hidden = true;
+    broaden.addEventListener('click', () => setScope(false));
+    const filters = el('div'); filters.className = 'filters'; filters.append(caseLabel, coverage, sourceStatus);
+    drawer.append(filters, scope, group, results, more);
+    controls.append(input, summary, previous, next, scopeButton, toggle, back, close);
+    panel.append(controls, broaden, drawer); backdrop.appendChild(panel); root.append(style, backdrop); document.body.appendChild(host);
+    let groupPath = '', groupLimit = 30, groupHits = null;
+    function showDrawer(open) {
+      drawer.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      if (open) renderGroups();
+    }
+    showDrawer(false);
+    toggle.addEventListener('click', () => showDrawer(drawer.hidden));
+    group.addEventListener('change', () => { groupPath = group.value; groupLimit = 30; renderGroupRows(); });
+    more.addEventListener('click', () => {
+      const previousCount = results.childElementCount;
+      groupLimit += 30; renderGroupRows(); results.children[previousCount]?.focus();
+    });
     const highlightStyle = addStyle(diffHighlightCss);
     let contextTimer = null, loadTimer = null;
     const dirtyLoads = new Set();
+    let loadingSources = false, lastSourceRefresh = 0;
+    const failedSources = new Set();
+    function updateSourceStatus() {
+      const base = diffSearchCache;
+      if (!base) return;
+      const total = base.sourcePaths.length;
+      sourceStatus.textContent = onlyChanges ? '仅搜索新增和删除行' : total ?
+        `文件全文 ${base.sources.size}/${total}${loadingSources ? ' · 正在读取' : ''}${failedSources.size ? ` · ${failedSources.size} 个未取得全文` : ''}` : '';
+    }
+    async function readFileSource(filePath, base) {
+      const file = document.getElementById('mr_' + filePath);
+      const link = file?.querySelector('.dfd-path-new')?.href;
+      if (!link || new URL(link).origin !== location.origin || fileCommit(file) !== base.snapshot.commit) throw new Error('没有同一提交的源码链接');
+      const signal = W.AbortSignal?.any && W.AbortSignal.timeout
+        ? W.AbortSignal.any([controller.signal, W.AbortSignal.timeout(15000)]) : controller.signal;
+      const res = await W.fetch(link, {credentials:'same-origin', signal});
+      if (!res.ok || Number(res.headers.get('content-length')) > 12 * 1024 * 1024) throw new Error('无法读取文件页');
+      const html = await res.text();
+      if (html.length > 12 * 1024 * 1024) throw new Error('文件页过大');
+      const data = /<script\b[^>]*\bid=["']__NUXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
+      const repo = path.split('/').slice(1, 3).map(decodeURIComponent).join('/');
+      const text = data && readBlobText(data[1], repo, base.snapshot.commit, filePath);
+      if (typeof text !== 'string' || text.length > 2 * 1024 * 1024) throw new Error('全文不可用或过大');
+      return text;
+    }
+    async function loadSources() {
+      const base = diffSearchCache;
+      if (loadingSources || !base || !base.snapshot.commit || onlyChanges || !input.value) return;
+      const paths = base.sourcePaths.filter(path => !base.sources.has(path) && !failedSources.has(path));
+      if (!paths.length) return;
+      const start = paths.indexOf(originPath);
+      if (start > 0) paths.unshift(...paths.splice(start, 1));
+      loadingSources = true; updateSourceStatus();
+      let index = 0;
+      async function worker() {
+        while (index < paths.length && !disposed && !onlyChanges && input.value && location.href === url) {
+          const filePath = paths[index++];
+          try {
+            const text = await readFileSource(filePath, base);
+            if (disposed || location.href !== url) return;
+            const original = base.indexed.find(f => f.path === filePath);
+            const rows = sourceContextRows(text, original?.rows || [], 150000 - base.sourceRowCount);
+            base.sources.set(filePath, rows); base.sourceRowCount += rows.length;
+            if (!hits.length && !searching && (filePath === originPath || performance.now() - lastSourceRefresh > 800)) {
+              lastSourceRefresh = performance.now();
+              refreshExpandedSearch();
+            }
+          } catch {
+            if (disposed) return;
+            failedSources.add(filePath);
+          }
+          updateSourceStatus();
+        }
+      }
+      await Promise.all([worker(), worker()]);
+      loadingSources = false;
+      if (!disposed && location.href === url) { updateSourceStatus(); applyExpandedContext(); }
+    }
     function applyExpandedContext() {
-      contextTimer = null;
+      clearTimeout(contextTimer); contextTimer = null;
       if (!ready || disposed || location.href !== url) return;
       const base = diffSearchCache;
       if (!base) return;
@@ -1107,17 +1266,26 @@
         }
         if (!complete) outstanding.push(file.issue);
       }
+      for (const path of base.sources.keys()) if (!byPath.has(path)) byPath.set(path, {path, rows:[]});
       const ordered = base.paths.flatMap(path => byPath.has(path) ? [byPath.get(path)] : []);
       const merged = mergeExpandedContext(ordered, expandedFiles, snapshot.commit);
-      indexed = merged.indexed;
+      indexed = merged.indexed.map(file => {
+        const extra = base.sources.get(file.path);
+        if (!extra?.length) return file;
+        // 新行号只出现一次。原始 patch 和手动展开行保留各自的来源及旧行号。
+        const known = new Set(file.rows.map(r => r.newLine));
+        return {...file, rows:mergeDiffRows(extra.filter(r => !known.has(r.newLine)), file.rows)};
+      });
       const explanations = base.otherIssues.concat(outstanding);
       const remaining = base.absent + outstanding.length;
       coverage.textContent = `已搜索 ${indexed.length}/${snapshot.total} 个文件` +
         (remaining ? ` · ${remaining} 个文件未完整覆盖` : '') + (merged.added ? ` · 已补入 ${merged.added} 行展开上下文` : '');
       scope.hidden = false;
-      issues.textContent = [`提交 ${snapshot.commit.slice(0, 8) || '未知'}`, ...explanations].join('\n');
+      issues.textContent = [`提交 ${snapshot.commit.slice(0, 8) || '未知'}`, ...explanations, ...[...failedSources].map(path => path + '（全文不可用或超出索引容量）')].join('\n');
+      updateSourceStatus();
+      const selected = hits[active];
       completedSearch = null;
-      search(true);
+      search(true, selected);
     }
     refreshExpandedSearch = () => {
       if (ready && contextTimer === null) contextTimer = setTimeout(applyExpandedContext, 50);
@@ -1214,11 +1382,15 @@
       matchLines.clear(); fileRanges.clear(); dirtyFiles.clear();
       W.CSS?.highlights?.delete('gce-matches');
     }
-    function dismiss() { host.remove(); }
+    function dismiss() {
+      const restore = document.activeElement === host && opener?.isConnected && location.href === url;
+      host.remove();
+      if (restore) opener.focus?.({preventScroll:true});
+    }
     function cleanup() {
       if (disposed) return;
       if (bookmark?.commit && location.pathname + location.search === route)
-        searchMemory = { key: comparison, text: input.value, sensitive: sensitive.checked, changes: changes.checked };
+        searchMemory = { key: comparison, text: input.value, sensitive: sensitive.checked, changes: onlyChanges };
       disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++;
       clearTimeout(contextTimer); clearTimeout(loadTimer); dirtyLoads.clear(); refreshExpandedSearch = () => {};
       matchObserver.disconnect(); clearMatches(); clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true);
@@ -1265,7 +1437,7 @@
       const selector = `[data-${side}-line="${number}"]`;
       // 已渲染的行直接跳转，避免先到文件顶部再跳回来触发两轮懒加载。
       if (!file.querySelector(selector)) file.scrollIntoView({ block: 'start', behavior: 'instant' });
-      let attempts = 0;
+      let attempts = 0, expanded = false;
       function locate() {
         if (disposed || location.href !== url) return;
         const row = file.querySelector(selector);
@@ -1285,45 +1457,94 @@
             while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(W.getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
             (scroller || W).scrollBy({ top: delta, behavior: 'instant' });
           }
-        } else if (++attempts < 12) jumpTimer = setTimeout(locate, 150);
-        else summary.textContent = `已定位文件 ${hit.file.path}，目标行尚未渲染或文件已折叠；可关闭搜索后展开查看。`;
+        } else if (++attempts < 12) {
+          if (!expanded && hit.row.source) {
+            const button = contextButtonForLine(file, number);
+            if (button) { expanded = true; button.click(); }
+          }
+          jumpTimer = setTimeout(locate, 150);
+        }
+        else if (hit.row.source && blob) {
+          summary.textContent = '目标行仍在折叠区域，';
+          const link = el('a', `查看原文件第 ${number} 行`);
+          link.href = blob + '#L' + number; link.target = '_blank'; link.rel = 'noopener';
+          summary.appendChild(link);
+        } else summary.textContent = `已定位文件 ${hit.file.path}，目标行尚未渲染或文件已折叠；可关闭搜索后展开查看。`;
       }
       locate();
     }
     function move(direction) {
-      if (!ready || searching) { pendingMove = direction; summary.textContent = '正在准备结果，完成后自动跳转…'; return; }
+      if (!ready || searching || (!hits.length && loadingSources && !onlyChanges)) { pendingMove = direction; summary.textContent = '正在准备结果，完成后自动跳转…'; return; }
       if (!hits.length) return;
-      active = active < 0 ? (direction > 0 ? 0 : hits.length - 1) : (active + direction + hits.length) % hits.length;
-      render(); jump(hits[active]);
+      const index = active < 0 ? (direction > 0 ? 0 : hits.length - 1) : (active + direction + hits.length) % hits.length;
+      selectResult(index);
+    }
+    function selectResult(index) {
+      const wasEditing = root.activeElement === input;
+      active = index; groupPath = hits[index].file.path;
+      showDrawer(false); render();
+      input.focus({preventScroll:true});
+      if (!wasEditing) input.select();
+      jump(hits[active]);
     }
     function render() {
       previous.disabled = next.disabled = !hits.length;
+      summary.textContent = !input.value ? '' : active >= 0 ? `第 ${active + 1} / ${hits.length} 条` :
+        `${hits.length} 条匹配 · ${matchLines.size} 个文件`;
+      if (ready && input.value && !hits.length) summary.textContent = loadingSources && !onlyChanges ? '正在查找未展开的代码…' : `在已搜索的 ${indexed.length} 个文件中未找到匹配行`;
+      broaden.hidden = !(ready && input.value && !hits.length && onlyChanges);
+      if (!drawer.hidden) renderGroups();
+    }
+    function renderGroups() {
+      if (!groupHits) {
+        groupHits = new Map();
+        hits.forEach((hit, index) => {
+          if (!groupHits.has(hit.file.path)) groupHits.set(hit.file.path, []);
+          groupHits.get(hit.file.path).push(index);
+        });
+        group.replaceChildren();
+        for (const [path, indices] of groupHits) {
+          const option = el('option', `${path}（${indices.length}）`); option.value = path; group.appendChild(option);
+        }
+      }
+      if (!groupHits.has(groupPath)) groupPath = hits[active]?.file.path || hits[0]?.file.path || '';
+      group.value = groupPath; group.hidden = !hits.length;
+      renderGroupRows();
+    }
+    function renderGroupRows() {
       results.replaceChildren();
-      summary.textContent = input.value ? `${active < 0 ? 0 : active + 1} / ${hits.length} 条匹配行` : '输入关键词开始搜索（优先当前文件）';
-      if (ready && input.value && !hits.length) summary.textContent = `在已搜索的 ${indexed.length} 个文件中未找到匹配行`;
+      const indices = groupHits?.get(groupPath) || [];
+      more.hidden = groupLimit >= indices.length;
       const needle = input.value;
-      for (const hit of (active < 0 ? hits.slice(0, 3) : [hits[active]])) {
+      for (const hitIndex of indices.slice(0, groupLimit)) {
+        const hit = hits[hitIndex];
         const item = el('button'); item.type = 'button'; item.className = 'hit';
         const side = hit.row.kind === '-' ? '旧' : '新';
-        item.appendChild(el('div', `${hit.file.path} · ${side}行 ${hit.row.kind === '-' ? hit.row.oldLine : hit.row.newLine} · ${hit.row.kind === '+' ? '新增' : hit.row.kind === '-' ? '删除' : hit.row.expanded ? '展开上下文' : '上下文'}`));
+        item.appendChild(el('div', `${side}行 ${hit.row.kind === '-' ? hit.row.oldLine : hit.row.newLine} · ${hit.row.kind === '+' ? '新增' : hit.row.kind === '-' ? '删除' : hit.row.expanded ? '展开上下文' : hit.row.source ? '文件源码' : '上下文'}`));
         const code = el('div'); code.className = 'code';
         const text = hit.row.text;
         const index = (sensitive.checked ? text : text.toLowerCase()).indexOf(sensitive.checked ? needle : needle.toLowerCase());
         code.append(document.createTextNode(text.slice(0, index)), el('mark', text.slice(index, index + needle.length)), document.createTextNode(text.slice(index + needle.length)));
-        item.appendChild(code); item.addEventListener('click', () => { active = hits.indexOf(hit); render(); jump(hit); }); results.appendChild(item);
+        item.appendChild(code); item.addEventListener('click', () => selectResult(hitIndex)); results.appendChild(item);
       }
     }
-    function search(immediate = false) {
-      clearTimeout(searchTimer); clearTimeout(jumpTimer); clearHighlight(); clearMatches();
+    function search(immediate = false, selected = null) {
+      const keepHighlight = selected && highlighted?.isConnected;
+      clearTimeout(searchTimer); clearTimeout(jumpTimer);
+      if (!keepHighlight) clearHighlight();
+      clearMatches();
       const generation = ++searchGeneration;
       active = -1; hits = []; searching = false;
       previous.disabled = next.disabled = true;
-      if (results.firstChild) results.replaceChildren();
+      groupHits = null; group.hidden = more.hidden = broaden.hidden = true;
+      results.replaceChildren();
       if (composing) { summary.textContent = '正在输入…'; return; }
-      const caseSensitive = sensitive.checked, changesOnly = changes.checked;
+      const caseSensitive = sensitive.checked, changesOnly = onlyChanges;
       const needle = caseSensitive ? input.value : input.value.toLowerCase();
       if (!needle) { pendingMove = 0; completedSearch = null; render(); return; }
       if (!ready) { summary.textContent = '正在准备索引，完成后自动搜索当前关键词…'; return; }
+      void loadSources();
+      updateSourceStatus();
       searching = true;
       summary.textContent = '正在查找…';
       // 只从已完成且顺序相同的结果收窄；退格、改筛选和更换阅读起点都重新扫描。
@@ -1362,29 +1583,37 @@
         if (fileIndex < ordered.length || (candidates && candidateIndex < candidates.length)) searchTimer = setTimeout(step, 0);
         else {
           hits = pivot > 0 ? found.slice(pivot).concat(found.slice(0, pivot)) : found;
+          if (selected) active = hits.findIndex(h => h.file.path === selected.file.path &&
+            h.row.kind === selected.row.kind && (h.row.newLine ?? h.row.oldLine) === (selected.row.newLine ?? selected.row.oldLine));
+          matchLines = lines; groupHits = null;
           completedSearch = { needle, originPath, changesOnly, caseSensitive, hits }; searching = false; render();
-          matchLines = lines;
+          if (active >= 0 && !keepHighlight) jump(hits[active]);
+          if (active < 0 && keepHighlight) clearHighlight();
           if (lines.size && diffMain) {
             diffMain.querySelectorAll('.dfd-file').forEach(file => {
               if (lines.has(file.id.slice(3))) dirtyFiles.add(file);
             });
             highlightTimer = setTimeout(refreshMatches, 50);
           }
-          if (pendingMove) { const direction = pendingMove; pendingMove = 0; move(direction); }
+          if (pendingMove && (hits.length || !loadingSources || onlyChanges)) { const direction = pendingMove; pendingMove = 0; move(direction); }
         }
       }
       searchTimer = setTimeout(step, immediate || (candidates && candidates.length <= 1000) ? 0 : 100);
     }
     function onInput() {
       if (composing || lastInput === input.value) return;
-      lastInput = input.value; pendingMove = 0; search();
+      lastInput = input.value; groupLimit = 30; pendingMove = 0; search();
     }
     input.addEventListener('compositionstart', () => { composing = true; pendingMove = 0; search(); });
     input.addEventListener('compositionend', () => { composing = false; lastInput = input.value; search(); });
     input.addEventListener('input', onInput);
     sensitive.addEventListener('change', () => { pendingMove = 0; search(true); });
-    changes.addEventListener('change', () => { pendingMove = 0; search(true); });
-    refocusDiffSearch = () => { origin = readingPosition(); originPath = origin?.path || ''; completedSearch = null; pendingMove = 0; input.focus(); input.select(); search(true); };
+    refocusDiffSearch = text => {
+      if (text) input.value = lastInput = text;
+      origin = readingPosition(); originPath = origin?.path || '';
+      completedSearch = null; pendingMove = 0;
+      input.focus(); input.select(); search(true);
+    };
     input.focus(); input.select();
     (async () => {
       try {
@@ -1394,6 +1623,7 @@
         const payload = document.getElementById('__NUXT_DATA__');
         const currentCommit = document.querySelector('.dfd-path-new[href*="/blob/"]')?.getAttribute('href')?.split('/blob/')[1]?.split('/')[0];
         const cacheKey = url + ':' + currentCommit;
+        rememberContextRows(document.querySelectorAll(contextRowSelector), false);
         if (diffSearchCache?.key === cacheKey) {
           ({ snapshot, indexed } = diffSearchCache);
           for (const file of diffSearchCache.pending) {
@@ -1438,8 +1668,10 @@
           const node = document.getElementById('mr_' + file.path);
           if (node) captureLoadedDiff(node);
         }
+        const sourcePaths = snapshot.files.filter(f => !f.binary && f.type !== 'added' && f.type !== 'deleted' &&
+          (f.diff || f.collapsed || f.type === 'renamed')).map(f => f.path);
         snapshot = { commit: snapshot.commit, total: snapshot.total };
-        diffSearchCache = { key: cacheKey, snapshot, indexed, paths, pending, pendingPaths: new Set(pending.map(f => f.path)), absent, otherIssues };
+        diffSearchCache = { key: cacheKey, snapshot, indexed, paths, sourcePaths, sources:new Map(), sourceRowCount:0, pending, pendingPaths: new Set(pending.map(f => f.path)), absent, otherIssues };
         applyExpandedContext();
       } catch (error) { if (!disposed) { coverage.textContent = error.message; summary.textContent = '未能建立索引，请关闭后重试。'; } }
     })();
@@ -1553,9 +1785,11 @@
       visibleIndex = findReviewFileIndex(allFiles, visibleIndex);
       visibleFile = allFiles[visibleIndex];
       const path = visibleFile?.path || '';
-      if (current.textContent !== path) {
-        current.textContent = path;
+      if (current.title !== path) {
         current.title = path;
+        current.querySelector('.short-path').textContent = path.split('/').slice(-2).join('/');
+        current.querySelector('.desktop-path').textContent = path;
+        current.parentElement.querySelector('.full-path').textContent = path;
       }
       // 搜索时保留用户选中的匹配项；无筛选时让前后跳转跟随当前阅读位置。
       if (visibleFile && !query.value.trim() && root.activeElement !== picker && selected !== visibleFile.id) {
@@ -1613,11 +1847,17 @@
           button[aria-pressed="true"] { outline:2px solid #0969da; }
           .count { font-size:12px; white-space:nowrap; }
           .heading { display:flex; align-items:center; gap:8px; width:100%; }
-          .current { flex:1; min-width:0; max-width:480px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .path-details { flex:1; min-width:0; }
+          .current { cursor:pointer; display:block; min-width:0; max-width:480px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .short-path { display:none; }
+          .full-path { overflow-wrap:anywhere; user-select:all; }
+          .feedback:empty {display:none;}
           .details { display:flex; flex-wrap:wrap; align-items:center; gap:8px; width:100%; }
           .details[hidden] { display:none; }
           .feedback { font-size:12px; color:var(--ui-text-dimmed,#59636e); }
-          @media(max-width:640px) { .bar { max-width:calc(100vw - 54px); } input,select { width:100%; max-width:none; } }
+          @media(max-width:640px) { .bar { max-width:calc(100vw - 54px); } .heading { flex-wrap:wrap; }
+            .path-details { flex:1 0 70%; } .short-path {display:inline;} .desktop-path {display:none;}
+            input,select { width:100%; max-width:none; } }
         `;
         const bar = document.createElement('div'); bar.className = 'bar';
         bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'PR 评审工具');
@@ -1635,7 +1875,13 @@
           focus.setAttribute('aria-pressed', String(on));
         });
         focus.setAttribute('aria-pressed', 'false');
-        current = document.createElement('span'); current.className = 'current';
+        const pathDetails = document.createElement('details'); pathDetails.className = 'path-details';
+        current = document.createElement('summary'); current.className = 'current';
+        for (const name of ['desktop-path', 'short-path']) {
+          const span = document.createElement('span'); span.className = name; current.appendChild(span);
+        }
+        const fullPath = document.createElement('div'); fullPath.className = 'full-path';
+        pathDetails.append(current, fullPath);
         const heading = document.createElement('div'); heading.className = 'heading';
         const label = document.createElement('strong'); label.textContent = '正在阅读';
         details = document.createElement('div'); details.className = 'details'; details.id = 'review-details'; details.hidden = true;
@@ -1655,7 +1901,7 @@
           try { await W.navigator.clipboard.writeText(visibleFile.path); feedback.textContent = '路径已复制'; }
           catch { feedback.textContent = '复制失败，请从文件标题手动复制'; }
         });
-        heading.append(label, current, button('上一处改动', () => navigateBlock(-1)), button('下一处改动', () => navigateBlock(1)), collapse);
+        heading.append(label, pathDetails, button('上一处改动', () => navigateBlock(-1)), button('下一处改动', () => navigateBlock(1)), collapse);
         const contentSearch = button('查找差异 Ctrl+F', openDiffSearch);
         details.append(query, picker, previous, next, count, focus, contentSearch, copy);
         bar.append(heading, details, feedback); root.append(style, bar); document.body.appendChild(host);
