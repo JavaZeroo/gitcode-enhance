@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.5
+// @version      0.3.9
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -33,7 +33,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.5';
+  const VERSION = '0.3.9';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -91,8 +91,7 @@
     return ranges[0];
   }
 
-  function hitLineLookup(hits) {
-    const files = new Map();
+  function hitLineLookup(hits, files = new Map()) {
     for (const { file, row } of hits) {
       if (!files.has(file.path)) files.set(file.path, new Set());
       const lines = files.get(file.path);
@@ -287,7 +286,7 @@
   }
 
   function installNetworkBlocking() {
-    if (!activeRules.length) return;
+    if (!activeRules.length && !settings.pr.reviewTools) return;
 
     // fetch（Nuxt 的 $fetch/ofetch 底层就是 globalThis.fetch，运行时取值，document-start 时替换即可）
     const origFetch = W.fetch;
@@ -299,9 +298,13 @@
           recordBlock(rule, url);
           return W.Promise.reject(new W.TypeError('Failed to fetch (blocked by gitcode-enhance)'));
         }
-        return origFetch.apply(this, arguments);
+        const response = origFetch.apply(this, arguments);
+        if (requestedDiffs.size && typeof url === 'string' && url.includes('/changes')) observeLoadedResponse(url, response);
+        return response;
       };
     }
+
+    if (!activeRules.length) return;
 
     // 保留原生 XHR。GitCode 的业务错误处理会把主动拒绝显示成“连接出错”，
     // 且不统一识别 Axios 取消标记。这里放行，避免永久 pending 或伪造成功响应。
@@ -514,19 +517,21 @@
   // CSS：去广告 / 隐藏 AI 组件 / GitHub 风格
   // =====================================================================
   function addStyle(css) {
-    try { GM_addStyle(css); } catch (e) {
+    try { return GM_addStyle(css); } catch (e) {
       const el = document.createElement('style'); el.textContent = css; (document.head || document.documentElement).appendChild(el);
+      return el;
     }
   }
 
-  function applyStyles() {
-    addStyle(`
+  const diffHighlightCss = `
       .gce-search-hit { outline:3px solid #ffbf00 !important; outline-offset:-3px; }
       .gce-search-hit > td { background-color:rgba(255,191,0,.2) !important; }
       .gce-search-cell { box-shadow:inset 5px 0 #ffbf00 !important; }
       ::highlight(gce-matches) { background-color:#ffe031; color:#171717; }
       ::highlight(gce-keyword) { background-color:#ff9f1a; color:#171717; text-decoration:underline; }
-    `);
+    `;
+
+  function applyStyles() {
     const rules = [];
     const ab = settings.adblock;
     if (ab.udeskWidget) rules.push('#udesk_container, #udesk_iframe, #udesk_panel { display: none !important; }');
@@ -741,25 +746,31 @@
     return { rows, complete: valid && inHunk && oldLeft === 0 && newLeft === 0 };
   }
 
-  // v0.3.1 only indexes supplied data. Deferred loading and cache refresh are planned in ROADMAP.md (S1/S2).
+  // 初始索引只读站点提供的 patch，并保留需要补全的文件。
   function indexDiffSnapshot(snapshot) {
     let incomplete = Math.max(0, snapshot.total - snapshot.files.length), binary = 0, empty = 0;
     const issues = incomplete ? [`${incomplete} 个文件未返回`] : [];
+    const pending = [];
+    function markIncomplete(file, reason) {
+      incomplete++;
+      const issue = `${file.path}（${reason}）`;
+      pending.push({path: file.path, addedLines: file.addedLines, removedLines: file.removedLines, issue});
+      issues.push(issue);
+    }
     const indexed = snapshot.files.flatMap(file => {
       if (file.binary) { binary++; return []; }
       // Only explicit empty-file metadata with zero changes proves there is no text to index.
       if (file.isEmpty && file.addedLines === 0 && file.removedLines === 0 && !file.diff && !file.tooLarge) { empty++; return []; }
       if (typeof file.diff !== 'string' || !file.diff) {
-        incomplete++;
-        issues.push(`${file.path}（${file.collapsed ? '站点尚未加载差异' : '未返回文本差异'}）`);
+        markIncomplete(file, file.collapsed ? '站点尚未加载差异' : '未返回文本差异');
         return [];
       }
       const parsed = parseDiffLines(file.diff);
-      if (!parsed.complete || file.tooLarge) { incomplete++; issues.push(`${file.path}（差异被截断或不完整）`); }
+      if (!parsed.complete || file.tooLarge) markIncomplete(file, '差异被截断或不完整');
       const { diff, ...metadata } = file;
       return [{ ...metadata, rows: parsed.rows.map(row => ({ ...row, lowerText: row.text.toLowerCase() })) }];
     });
-    return { indexed, incomplete, binary, empty, issues };
+    return { indexed, incomplete, binary, empty, issues, pending };
   }
 
   function searchDiffRows(files, needle, caseSensitive = false, changesOnly = false) {
@@ -778,18 +789,53 @@
     return index > 0 ? files.slice(index).concat(files.slice(0, index)) : files;
   }
 
-  function currentDiffPath() {
-    const files = Array.from(document.querySelectorAll('.dfd-file[id]'));
-    const current = files.find(file => file.getBoundingClientRect().bottom > 221);
-    return current?.id.replace(/^mr_/, '') || '';
+  const readingLine = 221;
+  const numberedRows = 'tr.dft-row[data-old-line], tr.dft-row[data-new-line]';
+  function fileCommit(file) {
+    return file?.querySelector('.dfd-path-new')?.getAttribute('href')?.split('/blob/')[1]?.split('/')[0] || '';
+  }
+  function scrollSurface(node) {
+    for (let p = node.parentElement; p; p = p.parentElement) {
+      if (p.scrollHeight > p.clientHeight && /auto|scroll/.test(W.getComputedStyle(p).overflowY)) return p;
+    }
+    return W;
+  }
+  function alignAt(node, top) {
+    scrollSurface(node).scrollBy({ top: node.getBoundingClientRect().top - top, behavior: 'instant' });
+  }
+  function readingPosition() {
+    const files = document.querySelectorAll('.dfd-file[id]');
+    const file = Array.from(files).find(f => f.getBoundingClientRect().bottom > readingLine) || files[files.length - 1];
+    if (!file) return null;
+    const rows = file.querySelectorAll(numberedRows);
+    let low = 0, high = rows.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (rows[mid].getBoundingClientRect().bottom > readingLine) high = mid;
+      else low = mid + 1;
+    }
+    const row = rows[low], rect = row?.getBoundingClientRect();
+    const visible = rect && rect.top < W.innerHeight;
+    return { path: file.id.slice(3), commit: fileCommit(file), fileTop: file.getBoundingClientRect().top,
+      top: visible ? rect.top : null, oldLine: visible ? Number(row.dataset.oldLine) || null : null,
+      newLine: visible ? Number(row.dataset.newLine) || null : null, afterFile: rows.length > 0 && low === rows.length };
+  }
+
+  // 在分批扫描中确定回绕边界；只有一侧行号的新增/删除也沿用 patch 顺序。
+  function atSearchOrigin(file, row, origin) {
+    if (!origin || file.path !== origin.path) return true;
+    if (origin.afterFile) return false;
+    if (!origin.oldLine && !origin.newLine) return true;
+    return (origin.oldLine && row.oldLine >= origin.oldLine) || (origin.newLine && row.newLine >= origin.newLine);
   }
 
   async function indexDiffSnapshotAsync(snapshot, cancelled, yieldTask = () => new Promise(resolve => setTimeout(resolve, 0))) {
-    const result = { indexed: [], incomplete: Math.max(0, snapshot.total - snapshot.files.length), binary: 0, empty: 0, issues: [] };
+    const result = { indexed: [], incomplete: Math.max(0, snapshot.total - snapshot.files.length), binary: 0, empty: 0, issues: [], pending: [] };
     if (result.incomplete) result.issues.push(`${result.incomplete} 个文件未返回`);
     for (let i = 0; i < snapshot.files.length; i++) {
       if (cancelled()) return null;
       const part = indexDiffSnapshot({ total: 1, files: [snapshot.files[i]] });
+      result.pending.push(...part.pending);
       result.indexed.push(...part.indexed); result.issues.push(...part.issues);
       result.incomplete += part.incomplete; result.binary += part.binary; result.empty += part.empty;
       if (i % 4 === 3) await yieldTask();
@@ -799,6 +845,176 @@
 
   let closeDiffSearch = () => {};
   let refocusDiffSearch = () => {};
+  let refreshExpandedSearch = () => {};
+  const expandedFiles = new Map();
+  const loadedDiffs = new Map(), requestedDiffs = new Map();
+  let searchMemory = null;
+  let expandedRoute = '', expansionObserver = null;
+  function resetExpandedContext(route) {
+    if (route === expandedRoute) return;
+    expansionObserver?.disconnect();
+    expansionObserver = null;
+    expandedFiles.clear(); loadedDiffs.clear(); requestedDiffs.clear(); searchMemory = null;
+    expandedRoute = route;
+  }
+  const contextRowSelector = 'tr.dft-row[data-old-line][data-new-line]';
+  function collectExpandedRows(records) {
+    if (location.pathname + location.search !== expandedRoute) return;
+    const rows = new Set();
+    for (const record of records) {
+      const parent = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      const row = parent?.closest(contextRowSelector);
+      if (row) rows.add(row);
+      for (const node of record.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.matches(contextRowSelector)) rows.add(node);
+        else if (!row) node.querySelectorAll(contextRowSelector).forEach(item => rows.add(item));
+      }
+    }
+    let changed = false;
+    const sources = new Map();
+    for (const row of rows) {
+      const file = row.closest('.dfd-file[id^="mr_"]');
+      if (!file) continue;
+      if (!sources.has(file)) {
+        const commit = file.querySelector('.dfd-path-new')?.getAttribute('href')?.split('/blob/')[1]?.split('/')[0];
+        const path = file.id.slice(3);
+        if (commit && expandedFiles.get(path)?.commit !== commit) expandedFiles.set(path, { commit, rows: new Map() });
+        sources.set(file, commit ? expandedFiles.get(path) : null);
+      }
+      const source = sources.get(file);
+      if (!source) continue;
+      const oldLine = Number(row.dataset.oldLine), newLine = Number(row.dataset.newLine);
+      if (!Number.isSafeInteger(oldLine) || !Number.isSafeInteger(newLine) || oldLine < 1 || newLine < 1) continue;
+      // 并排替换行也有两个行号；仅采集站点明确标记为未改动的代码单元格。
+      const cells = row.querySelectorAll('td.dft-code');
+      if (!cells.length || !Array.from(cells).every(cell => cell.classList.contains('dft-code--context'))) continue;
+      const text = cells[cells.length - 1].querySelector('.dft-code-ctn')?.textContent;
+      if (!text || text === '\u00a0') continue;
+      const previous = source.rows.get(newLine);
+      if (previous?.text === text && previous.oldLine === oldLine) continue;
+      source.rows.set(newLine, { oldLine, newLine, text, lowerText: text.toLowerCase(), kind: ' ', expanded: true });
+      changed = true;
+    }
+    if (changed) refreshExpandedSearch();
+  }
+  // 站点可能只渲染原始 patch 的一部分。保留旧/新行坐标，合并时避免复制并排上下文。
+  function mergeDiffRows(original, rendered) {
+    if (!original.length) return rendered;
+    const key = r => r.kind + ':' + (r.newLine ?? r.oldLine);
+    const present = new Set(rendered.map(key));
+    const extra = original.filter(row => !present.has(key(row)));
+    if (!extra.length) return rendered;
+    const merged = [];
+    let i = 0;
+    for (const row of rendered) {
+      while (i < extra.length &&
+        ((extra[i].oldLine && row.oldLine && extra[i].oldLine < row.oldLine) ||
+         (extra[i].newLine && row.newLine && extra[i].newLine < row.newLine))) merged.push(extra[i++]);
+      merged.push(row);
+    }
+    return merged.concat(extra.slice(i));
+  }
+
+  function observeLoadedResponse(rawUrl, response) {
+    let url;
+    try { url = new URL(rawUrl, location.href); } catch { return; }
+    const path = url.searchParams.get('file_path');
+    const request = requestedDiffs.get(path);
+    if (!request || !url.pathname.endsWith('/merge_requests/' + request.pr + '/changes') ||
+        !['gitcode.com', 'web-api.gitcode.com'].includes(url.hostname)) return;
+    requestedDiffs.delete(path);
+    response.then(async res => {
+      if (!res.ok || Number(res.headers.get('content-length')) > 12 * 1024 * 1024) return;
+      const payload = await res.clone().json();
+      if (location.pathname + location.search !== request.route || fileCommit(request.file) !== request.commit ||
+          (payload.diff_refs?.head_sha || payload.sha) !== request.commit) return;
+      const diff = payload.changes?.find(f => (f.file_path || f.new_path || f.old_path) === path);
+      if (!diff || diff.binary || typeof diff.diff !== 'string' || diff.diff.length > 12 * 1024 * 1024) return;
+      const parsed = parseDiffLines(diff.diff);
+      if (!parsed.rows.length) return;
+      const complete = parsed.complete && !diff.too_large &&
+        parsed.rows.filter(r => r.kind === '+').length === diff.added_lines &&
+        parsed.rows.filter(r => r.kind === '-').length === diff.removed_lines;
+      const rows = parsed.rows.map(r => ({...r, lowerText: r.text.toLowerCase()}));
+      loadedDiffs.set(path, {commit: request.commit, rows, complete});
+      refreshExpandedSearch();
+    }).catch(() => { /* 站点没有返回可用 patch 时，继续使用实际渲染的行。 */ });
+  }
+
+  function captureLoadedDiff(file) {
+    const commit = fileCommit(file);
+    if (!commit) return false;
+    const path = file.id.slice(3), previous = loadedDiffs.get(path);
+    if (previous?.commit === commit && previous.complete) return false;
+    const rows = [];
+    for (const tr of file.querySelectorAll(numberedRows)) {
+      const oldLine = Number(tr.dataset.oldLine) || null, newLine = Number(tr.dataset.newLine) || null;
+      for (const cell of tr.querySelectorAll('td.dft-code')) {
+        const kind = cell.classList.contains('dft-code--insert') ? '+' : cell.classList.contains('dft-code--delete') ? '-' :
+          cell.classList.contains('dft-code--context') ? ' ' : null;
+        if (!kind || (kind === ' ' && rows.length && rows[rows.length - 1].newLine === newLine)) continue;
+        const code = cell.querySelector('.dft-code-ctn');
+        if (!code || (kind !== '+' && !oldLine) || (kind !== '-' && !newLine)) continue;
+        const text = code.textContent === '\u00a0' ? '' : code.textContent;
+        rows.push({kind, oldLine: kind === '+' ? null : oldLine, newLine: kind === '-' ? null : newLine, text, lowerText: text.toLowerCase()});
+      }
+    }
+    if (!rows.length) return false;
+    const merged = previous?.commit === commit ? mergeDiffRows(previous.rows, rows) : rows;
+    if (previous?.commit === commit && merged.length === previous.rows.length &&
+        merged.every((row, i) => row.text === previous.rows[i].text)) return false;
+    loadedDiffs.set(path, {commit, rows: merged});
+    return true;
+  }
+
+  document.addEventListener('click', event => {
+    const button = event.target.closest?.('button, [role="button"], .dft-expand-btn');
+    const file = button?.closest('.dfd-file[id^="mr_"]');
+    if (!file || !settings.pr.reviewTools) return;
+    resetExpandedContext(location.pathname + location.search);
+    if (button.matches('.dft-expand-btn')) {
+      expansionObserver ??= new MutationObserver(collectExpandedRows);
+      expansionObserver.observe(file, { childList: true, subtree: true, characterData: true });
+    } else if (/load.*diff|show.*diff|加载.*(差异|改动|diff)|显示.*差异/i.test([button.textContent, button.title, button.getAttribute('aria-label')].join(' '))) {
+      // 用户要求站点加载此文件。等站点渲染代码，再补进同一提交的搜索。
+      const route = expandedRoute, path = file.id.slice(3);
+      const request = { route, file, commit: fileCommit(file), pr: location.pathname.split('/')[4] };
+      requestedDiffs.set(path, request);
+      const observer = new MutationObserver(() => {
+        if (route === expandedRoute && file.isConnected && captureLoadedDiff(file)) refreshExpandedSearch();
+      });
+      observer.observe(file, { childList: true, subtree: true });
+      setTimeout(() => {
+        observer.disconnect();
+        if (requestedDiffs.get(path) === request) requestedDiffs.delete(path);
+      }, 15000);
+    }
+  }, true);
+
+  function mergeExpandedContext(base, expanded, commit) {
+    let added = 0;
+    const byPath = new Map(base.map(file => [file.path, file]));
+    for (const [path, source] of expanded) {
+      if (!commit || source.commit !== commit) continue;
+      const file = byPath.get(path) || { path, rows: [] };
+      const extra = new Map(source.rows);
+      for (const row of file.rows) extra.delete(row.newLine);
+      if (!extra.size) continue;
+      const incoming = [...extra.values()].sort((a, b) => a.newLine - b.newLine);
+      const rows = [];
+      let i = 0;
+      for (const row of file.rows) {
+        while (i < incoming.length && (row.newLine === null
+          ? incoming[i].oldLine < row.oldLine : incoming[i].newLine < row.newLine)) rows.push(incoming[i++]);
+        rows.push(row);
+      }
+      while (i < incoming.length) rows.push(incoming[i++]);
+      byPath.set(path, { ...file, rows });
+      added += incoming.length;
+    }
+    return { indexed: [...byPath.values()], added };
+  }
   let diffSearchCache = null;
   let diffCacheTimer = null;
   function clearDiffCache() {
@@ -814,11 +1030,17 @@
     closeDiffSearch();
     clearTimeout(diffCacheTimer); diffCacheTimer = null;
     const url = location.href, path = location.pathname;
-    let originPath = currentDiffPath();
+    resetExpandedContext(path + location.search);
+    const bookmark = readingPosition();
+    let origin = bookmark, originPath = origin?.path || '';
+    const route = path + location.search;
+    const comparison = route + ':' + (bookmark?.commit || '');
+    const memory = bookmark?.commit && searchMemory?.key === comparison ? searchMemory : null;
     const host = document.createElement('div'); host.id = 'gce-diff-search';
     const root = host.attachShadow({ mode: 'open' });
     const controller = new W.AbortController();
     let ready = false, searching = false, pendingMove = 0;
+    let completedSearch = null, composing = false, lastInput = '';
     let disposed = false, indexed = [], snapshot = null, hits = [], jumpTimer = null, active = -1, searchTimer = null, searchGeneration = 0, highlighted = null;
     const el = (tag, text) => { const n = document.createElement(tag); if (text) n.textContent = text; return n; };
     const style = el('style'); style.textContent = `
@@ -837,23 +1059,69 @@
     const panel = el('section'); panel.className = 'panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'PR 差异内容搜索'); panel.setAttribute('aria-modal', 'false');
     const heading = el('div'); heading.className = 'head';
     const close = el('button', '关闭搜索'); close.type = 'button';
-    heading.append(el('h2', '查找 PR 差异 · Ctrl+F'), close);
+    const back = el('button', '返回搜索前位置'); back.hidden = true;
+    heading.append(el('h2', '查找 PR 差异 · Ctrl+F'), back, close);
     const controls = el('div'); controls.className = 'controls';
     const input = el('input'); input.type = 'search'; input.placeholder = '搜索全部文件的差异内容'; input.setAttribute('aria-label', '差异内容关键词');
     const sensitive = el('input'); sensitive.type = 'checkbox';
     const changes = el('input'); changes.type = 'checkbox';
+    input.value = lastInput = memory?.text || '';
+    sensitive.checked = !!memory?.sensitive; changes.checked = !!memory?.changes;
     const caseLabel = el('label', '区分大小写 '); caseLabel.appendChild(sensitive);
     const changeLabel = el('label', '仅新增/删除行 '); changeLabel.appendChild(changes);
     const previous = el('button', '上一处'), next = el('button', '下一处');
     previous.type = next.type = 'button';
     previous.addEventListener('click', () => move(-1)); next.addEventListener('click', () => move(1));
-    input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); move(event.shiftKey ? -1 : 1); } });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !composing && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault(); move(event.shiftKey ? -1 : 1);
+      }
+    });
     controls.append(input, previous, next, caseLabel, changeLabel);
     const coverage = el('div', '正在准备差异索引，可先输入关键词…'); coverage.className = 'info';
+    const scope = el('details'); scope.className = 'info';
+    const scopeLabel = el('summary', '查看搜索范围'); const issues = el('div');
+    issues.style.cssText = 'max-height:14vh;overflow:auto;white-space:pre-line'; scope.append(scopeLabel, issues); scope.hidden = true;
     const summary = el('div'); summary.setAttribute('role', 'status');
     const results = el('div'); results.className = 'results';
-    const hint = el('div', '搜索 diff 中的新增、删除及上下文行，不包括未改动的完整文件。Enter 下一处，Shift+Enter 上一处，Esc 关闭。'); hint.className = 'info';
-    panel.append(heading, controls, coverage, hint, summary, results); backdrop.appendChild(panel); root.append(style, backdrop); document.body.appendChild(host);
+    const hint = el('div', '搜索 diff 和本页手动展开过的上下文。Enter 下一处，Shift+Enter 上一处，Esc 关闭。'); hint.className = 'info';
+    panel.append(heading, controls, coverage, scope, hint, summary, results); backdrop.appendChild(panel); root.append(style, backdrop); document.body.appendChild(host);
+    const highlightStyle = addStyle(diffHighlightCss);
+    let contextTimer = null, loadTimer = null;
+    const dirtyLoads = new Set();
+    function applyExpandedContext() {
+      contextTimer = null;
+      if (!ready || disposed || location.href !== url) return;
+      const base = diffSearchCache;
+      if (!base) return;
+      const byPath = new Map(base.indexed.map(f => [f.path, f]));
+      const outstanding = [];
+      for (const file of base.pending) {
+        const loaded = loadedDiffs.get(file.path);
+        let complete = false;
+        if (loaded && loaded.commit === snapshot.commit) {
+          const rows = mergeDiffRows(byPath.get(file.path)?.rows || [], loaded.rows);
+          byPath.set(file.path, {path: file.path, rows});
+          complete = loaded.complete || rows.filter(r => r.kind === '+').length === file.addedLines &&
+            rows.filter(r => r.kind === '-').length === file.removedLines;
+        }
+        if (!complete) outstanding.push(file.issue);
+      }
+      const ordered = base.paths.flatMap(path => byPath.has(path) ? [byPath.get(path)] : []);
+      const merged = mergeExpandedContext(ordered, expandedFiles, snapshot.commit);
+      indexed = merged.indexed;
+      const explanations = base.otherIssues.concat(outstanding);
+      const remaining = base.absent + outstanding.length;
+      coverage.textContent = `已搜索 ${indexed.length}/${snapshot.total} 个文件` +
+        (remaining ? ` · ${remaining} 个文件未完整覆盖` : '') + (merged.added ? ` · 已补入 ${merged.added} 行展开上下文` : '');
+      scope.hidden = false;
+      issues.textContent = [`提交 ${snapshot.commit.slice(0, 8) || '未知'}`, ...explanations].join('\n');
+      completedSearch = null;
+      search(true);
+    }
+    refreshExpandedSearch = () => {
+      if (ready && contextTimer === null) contextTimer = setTimeout(applyExpandedContext, 50);
+    };
     function clearHighlight() {
       highlighted?.classList.remove('gce-search-hit');
       highlighted?.querySelectorAll('.gce-search-cell').forEach(cell => cell.classList.remove('gce-search-cell'));
@@ -862,35 +1130,70 @@
     let highlightTimer = null, matchLines = new Map();
     const fileRanges = new Map(), dirtyFiles = new Set();
     const diffMain = document.querySelector('.dfd-main');
-    function refreshMatches() {
-      highlightTimer = null;
-      if (disposed || !W.CSS?.highlights || !W.Highlight) return;
-      for (const file of fileRanges.keys()) if (!file.isConnected) fileRanges.delete(file);
+    let rangeWork = null, matchesHighlight = null;
+    function removeFileRanges(file) {
+      for (const range of fileRanges.get(file) || []) matchesHighlight.delete(range);
+      fileRanges.delete(file);
+    }
+    function* updateRanges() {
+      for (const file of fileRanges.keys()) if (!file.isConnected) removeFileRanges(file);
       for (const file of dirtyFiles) {
-        fileRanges.delete(file);
+        dirtyFiles.delete(file);
+        removeFileRanges(file);
         const lines = matchLines.get(file.id.slice(3));
         if (!file.isConnected || !lines) continue;
         const blob = file.querySelector('.dfd-path-new')?.getAttribute('href') || '';
         if (snapshot?.commit && blob.includes('/blob/') && !blob.includes('/blob/' + snapshot.commit + '/')) continue;
         const ranges = [], seen = new Set();
+        fileRanges.set(file, ranges);
+        let rows = 0;
         for (const row of file.querySelectorAll('[data-old-line], [data-new-line]')) {
+          if (++rows % 32 === 0) yield;
+          if (!file.isConnected) { removeFileRanges(file); break; }
           const cells = row.querySelectorAll('.dft-code-ctn');
           for (const side of ['old', 'new']) {
             if (!lines.has(side + ':' + row.getAttribute('data-' + side + '-line'))) continue;
             const code = cells.length > 1 ? cells[side === 'old' ? 0 : cells.length - 1] : cells[0];
             if (!code || seen.has(code)) continue;
             seen.add(code);
-            ranges.push(...codeTextRanges(code, input.value, sensitive.checked));
+            for (const range of codeTextRanges(code, input.value, sensitive.checked)) {
+              matchesHighlight.add(range);
+              ranges.push(range);
+            }
           }
         }
-        fileRanges.set(file, ranges);
+        yield;
       }
-      dirtyFiles.clear();
-      const highlight = new W.Highlight();
-      for (const ranges of fileRanges.values()) for (const range of ranges) highlight.add(range);
-      W.CSS.highlights.set('gce-matches', highlight);
+    }
+    function refreshMatches() {
+      highlightTimer = null;
+      if (disposed || !W.CSS?.highlights || !W.Highlight) return;
+      if (!matchesHighlight) {
+        matchesHighlight = new W.Highlight();
+        W.CSS.highlights.set('gce-matches', matchesHighlight);
+      }
+      rangeWork ??= updateRanges();
+      const deadline = performance.now() + 6;
+      do {
+        if (rangeWork.next().done) { rangeWork = null; return; }
+      } while (performance.now() < deadline);
+      highlightTimer = setTimeout(refreshMatches, 0);
     }
     const matchObserver = new MutationObserver(records => {
+      // 站点在当前搜索期间加载了原本缺失的文件（也兼容非按钮入口）。
+      const pending = diffSearchCache?.pendingPaths;
+      if (ready && pending?.size) {
+        for (const record of records) {
+          const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+          const file = target?.closest('.dfd-file');
+          if (file && pending.has(file.id.slice(3)) && record.addedNodes.length) dirtyLoads.add(file);
+        }
+        if (dirtyLoads.size && loadTimer === null) loadTimer = setTimeout(() => {
+          loadTimer = null;
+          for (const file of dirtyLoads) if (file.isConnected && captureLoadedDiff(file)) refreshExpandedSearch();
+          dirtyLoads.clear();
+        }, 80);
+      }
       if (!matchLines.size) return;
       for (const record of records) {
         const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
@@ -907,22 +1210,47 @@
     if (diffMain) matchObserver.observe(diffMain, { childList: true, subtree: true, characterData: true });
     function clearMatches() {
       clearTimeout(highlightTimer); highlightTimer = null;
+      rangeWork = null; matchesHighlight = null;
       matchLines.clear(); fileRanges.clear(); dirtyFiles.clear();
       W.CSS?.highlights?.delete('gce-matches');
     }
     function dismiss() { host.remove(); }
     function cleanup() {
       if (disposed) return;
+      if (bookmark?.commit && location.pathname + location.search === route)
+        searchMemory = { key: comparison, text: input.value, sensitive: sensitive.checked, changes: changes.checked };
       disposed = true; controller.abort(); clearTimeout(jumpTimer); clearTimeout(searchTimer); searchGeneration++;
+      clearTimeout(contextTimer); clearTimeout(loadTimer); dirtyLoads.clear(); refreshExpandedSearch = () => {};
       matchObserver.disconnect(); clearMatches(); clearHighlight(); dismiss(); document.removeEventListener('keydown', escape, true);
-      hits = []; indexed = []; snapshot = null;
+      highlightStyle?.remove();
+      hits = []; indexed = []; snapshot = null; completedSearch = null;
       expireDiffCache();
       closeDiffSearch = () => {}; refocusDiffSearch = () => {};
     }
     closeDiffSearch = cleanup;
-    function escape(event) { if (event.key === 'Escape') { event.stopPropagation(); cleanup(); } }
+    function escape(event) {
+      if (event.key === 'Escape' && !composing && !event.isComposing && event.keyCode !== 229) {
+        event.stopPropagation(); cleanup();
+      }
+    }
     document.addEventListener('keydown', escape, true); close.addEventListener('click', cleanup);
     backdrop.addEventListener('click', event => { if (event.target === backdrop) cleanup(); });
+    back.addEventListener('click', () => {
+      const file = document.getElementById('mr_' + bookmark.path);
+      if (!file || fileCommit(file) !== bookmark.commit) { summary.textContent = '原文件或提交已变化，无法恢复位置。'; return; }
+      clearTimeout(jumpTimer);
+      const selector = bookmark.newLine ? `[data-new-line="${bookmark.newLine}"]` : `[data-old-line="${bookmark.oldLine}"]`;
+      let attempts = 0;
+      function restore() {
+        if (disposed || location.href !== url) return;
+        const row = bookmark.top !== null && file.querySelector(selector);
+        if (row) { alignAt(row, bookmark.top); cleanup(); return; }
+        alignAt(file, bookmark.fileTop);
+        if (bookmark.top !== null && ++attempts < 12) jumpTimer = setTimeout(restore, 100);
+        else cleanup();
+      }
+      restore();
+    });
     function jump(hit) {
       clearTimeout(jumpTimer);
       const file = document.getElementById('mr_' + hit.file.path);
@@ -931,6 +1259,7 @@
       if (snapshot.commit && blob.includes('/blob/') && !blob.includes('/blob/' + snapshot.commit + '/')) {
         summary.textContent = 'PR 提交已变化。请刷新页面后搜索，避免跳到错误版本。'; return;
       }
+      back.hidden = !bookmark;
       const side = hit.row.kind === '-' ? 'old' : 'new';
       const number = side === 'old' ? hit.row.oldLine : hit.row.newLine;
       const selector = `[data-${side}-line="${number}"]`;
@@ -971,11 +1300,12 @@
       previous.disabled = next.disabled = !hits.length;
       results.replaceChildren();
       summary.textContent = input.value ? `${active < 0 ? 0 : active + 1} / ${hits.length} 条匹配行` : '输入关键词开始搜索（优先当前文件）';
+      if (ready && input.value && !hits.length) summary.textContent = `在已搜索的 ${indexed.length} 个文件中未找到匹配行`;
       const needle = input.value;
       for (const hit of (active < 0 ? hits.slice(0, 3) : [hits[active]])) {
         const item = el('button'); item.type = 'button'; item.className = 'hit';
         const side = hit.row.kind === '-' ? '旧' : '新';
-        item.appendChild(el('div', `${hit.file.path} · ${side}行 ${hit.row.kind === '-' ? hit.row.oldLine : hit.row.newLine} · ${hit.row.kind === '+' ? '新增' : hit.row.kind === '-' ? '删除' : '上下文'}`));
+        item.appendChild(el('div', `${hit.file.path} · ${side}行 ${hit.row.kind === '-' ? hit.row.oldLine : hit.row.newLine} · ${hit.row.kind === '+' ? '新增' : hit.row.kind === '-' ? '删除' : hit.row.expanded ? '展开上下文' : '上下文'}`));
         const code = el('div'); code.className = 'code';
         const text = hit.row.text;
         const index = (sensitive.checked ? text : text.toLowerCase()).indexOf(sensitive.checked ? needle : needle.toLowerCase());
@@ -986,38 +1316,76 @@
     function search(immediate = false) {
       clearTimeout(searchTimer); clearTimeout(jumpTimer); clearHighlight(); clearMatches();
       const generation = ++searchGeneration;
-      active = -1; hits = []; searching = false; render();
-      const needle = sensitive.checked ? input.value : input.value.toLowerCase();
-      if (!needle) { pendingMove = 0; return; }
+      active = -1; hits = []; searching = false;
+      previous.disabled = next.disabled = true;
+      if (results.firstChild) results.replaceChildren();
+      if (composing) { summary.textContent = '正在输入…'; return; }
+      const caseSensitive = sensitive.checked, changesOnly = changes.checked;
+      const needle = caseSensitive ? input.value : input.value.toLowerCase();
+      if (!needle) { pendingMove = 0; completedSearch = null; render(); return; }
       if (!ready) { summary.textContent = '正在准备索引，完成后自动搜索当前关键词…'; return; }
       searching = true;
-      previous.disabled = next.disabled = true;
       summary.textContent = '正在查找…';
-      const ordered = prioritizeDiffFiles(indexed, originPath);
-      let fileIndex = 0, rowIndex = 0;
+      // 只从已完成且顺序相同的结果收窄；退格、改筛选和更换阅读起点都重新扫描。
+      const candidates = completedSearch && completedSearch.originPath === originPath &&
+        completedSearch.caseSensitive === caseSensitive && completedSearch.changesOnly === changesOnly &&
+        needle.startsWith(completedSearch.needle) ? completedSearch.hits : null;
+      let startPath = originPath;
+      if (!candidates && startPath && !indexed.some(f => f.path === startPath)) {
+        const paths = diffSearchCache.paths;
+        const available = new Set(indexed.map(f => f.path));
+        startPath = paths.slice(paths.indexOf(startPath) + 1).find(path => available.has(path)) || '';
+      }
+      const ordered = candidates ? [] : prioritizeDiffFiles(indexed, startPath);
+      let pivot = -1;
+      let fileIndex = 0, rowIndex = 0, candidateIndex = 0;
       const found = [];
+      const lines = new Map();
       function step() {
         if (disposed || generation !== searchGeneration) return;
+        const start = found.length;
         let budget = 1000;
-        while (fileIndex < ordered.length && budget-- > 0) {
-          const file = ordered[fileIndex], row = file.rows[rowIndex++];
-          if (!row) { fileIndex++; rowIndex = 0; continue; }
-          if ((!changes.checked || row.kind !== ' ') && (sensitive.checked ? row.text : row.lowerText).includes(needle)) found.push({ file, row });
+        if (candidates) {
+          while (candidateIndex < candidates.length && budget-- > 0) {
+            const hit = candidates[candidateIndex++];
+            if ((caseSensitive ? hit.row.text : hit.row.lowerText).includes(needle)) found.push(hit);
+          }
+        } else {
+          while (fileIndex < ordered.length && budget-- > 0) {
+            const file = ordered[fileIndex], row = file.rows[rowIndex++];
+            if (!row) { fileIndex++; rowIndex = 0; continue; }
+            if (pivot < 0 && atSearchOrigin(file, row, origin)) pivot = found.length;
+            if ((!changesOnly || row.kind !== ' ') && (caseSensitive ? row.text : row.lowerText).includes(needle)) found.push({ file, row });
+          }
         }
-        if (fileIndex < ordered.length) searchTimer = setTimeout(step, 0);
+        hitLineLookup(found.slice(start), lines);
+        if (fileIndex < ordered.length || (candidates && candidateIndex < candidates.length)) searchTimer = setTimeout(step, 0);
         else {
-          hits = found; searching = false; render();
-          matchLines = hitLineLookup(hits);
-          diffMain?.querySelectorAll('.dfd-file').forEach(file => dirtyFiles.add(file));
-          refreshMatches();
+          hits = pivot > 0 ? found.slice(pivot).concat(found.slice(0, pivot)) : found;
+          completedSearch = { needle, originPath, changesOnly, caseSensitive, hits }; searching = false; render();
+          matchLines = lines;
+          if (lines.size && diffMain) {
+            diffMain.querySelectorAll('.dfd-file').forEach(file => {
+              if (lines.has(file.id.slice(3))) dirtyFiles.add(file);
+            });
+            highlightTimer = setTimeout(refreshMatches, 50);
+          }
           if (pendingMove) { const direction = pendingMove; pendingMove = 0; move(direction); }
         }
       }
-      searchTimer = setTimeout(step, immediate ? 0 : 100);
+      searchTimer = setTimeout(step, immediate || (candidates && candidates.length <= 1000) ? 0 : 100);
     }
-    input.addEventListener('input', () => { pendingMove = 0; search(); }); sensitive.addEventListener('change', () => { pendingMove = 0; search(true); }); changes.addEventListener('change', () => { pendingMove = 0; search(true); });
-    refocusDiffSearch = () => { originPath = currentDiffPath(); pendingMove = 0; input.focus(); input.select(); search(true); };
-    input.focus();
+    function onInput() {
+      if (composing || lastInput === input.value) return;
+      lastInput = input.value; pendingMove = 0; search();
+    }
+    input.addEventListener('compositionstart', () => { composing = true; pendingMove = 0; search(); });
+    input.addEventListener('compositionend', () => { composing = false; lastInput = input.value; search(); });
+    input.addEventListener('input', onInput);
+    sensitive.addEventListener('change', () => { pendingMove = 0; search(true); });
+    changes.addEventListener('change', () => { pendingMove = 0; search(true); });
+    refocusDiffSearch = () => { origin = readingPosition(); originPath = origin?.path || ''; completedSearch = null; pendingMove = 0; input.focus(); input.select(); search(true); };
+    input.focus(); input.select();
     (async () => {
       try {
         // Let the focused search input paint before parsing the page snapshot.
@@ -1028,9 +1396,12 @@
         const cacheKey = url + ':' + currentCommit;
         if (diffSearchCache?.key === cacheKey) {
           ({ snapshot, indexed } = diffSearchCache);
-          coverage.textContent = diffSearchCache.coverage;
+          for (const file of diffSearchCache.pending) {
+            const node = document.getElementById('mr_' + file.path);
+            if (node) captureLoadedDiff(node);
+          }
           ready = true;
-          search(true); return;
+          applyExpandedContext(); return;
         }
         // 默认比较直接复用本页数据；SPA 残留或自定义比较则重新读取当前 URL。
         if (payload && !location.search) {
@@ -1056,10 +1427,20 @@
         if (!result) return;
         ready = true;
         indexed = result.indexed;
-        coverage.textContent = `已索引 ${indexed.length}/${snapshot.total} 个文件 · 提交 ${snapshot.commit.slice(0, 8) || '未知'}${result.empty ? ` · ${result.empty} 个空文件无需文本搜索` : ''}${result.binary ? ` · ${result.binary} 个二进制文件不支持文本搜索` : ''}${result.incomplete ? ` · ${result.incomplete} 个文件未完整索引：${result.issues.join('；')}，搜索可能遗漏` : ' · 已覆盖服务器提供的全部文本 diff'}`;
+        const pending = result.pending;
+        const paths = snapshot.files.map(f => f.path);
+        const absent = Math.max(0, snapshot.total - paths.length);
+        const otherIssues = [];
+        if (absent) otherIssues.push(`${absent} 个文件未返回`);
+        if (result.empty) otherIssues.push(`${result.empty} 个空文件`);
+        if (result.binary) otherIssues.push(`${result.binary} 个二进制文件不支持文本搜索`);
+        for (const file of pending) {
+          const node = document.getElementById('mr_' + file.path);
+          if (node) captureLoadedDiff(node);
+        }
         snapshot = { commit: snapshot.commit, total: snapshot.total };
-        diffSearchCache = { key: cacheKey, snapshot, indexed, coverage: coverage.textContent };
-        search(true);
+        diffSearchCache = { key: cacheKey, snapshot, indexed, paths, pending, pendingPaths: new Set(pending.map(f => f.path)), absent, otherIssues };
+        applyExpandedContext();
       } catch (error) { if (!disposed) { coverage.textContent = error.message; summary.textContent = '未能建立索引，请关闭后重试。'; } }
     })();
   }
@@ -1071,13 +1452,45 @@
     }
   }, true);
 
+  // 文件按文档顺序纵向排列。先检查阅读位置附近，再按底边二分定位。
+  function findReviewFileIndex(files, hint) {
+    const line = readingLine;
+    if (!files.length) return -1;
+    let low = 0, high = files.length;
+    if (hint >= 0 && hint < high) {
+      const rect = files[hint].node.getBoundingClientRect();
+      if (rect.height > 0) {
+        if (rect.top <= line && rect.bottom > line) return hint;
+        if (rect.bottom <= line) low = hint + 1;
+        else high = hint;
+        const next = rect.bottom <= line ? low : high - 1;
+        if (next >= low && next < high) {
+          const neighbor = files[next].node.getBoundingClientRect();
+          if (neighbor.top <= line && neighbor.bottom > line) return next;
+        }
+      }
+    }
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const rect = files[mid].node.getBoundingClientRect();
+      if (rect.height === 0) {
+        // 隐藏节点的零矩形不能用于判断可见文件的顺序。
+        const index = files.findIndex(file => file.node.getBoundingClientRect().bottom > line);
+        return index < 0 ? files.length - 1 : index;
+      }
+      if (rect.bottom > line) high = mid;
+      else low = mid + 1;
+    }
+    return Math.min(low, files.length - 1);
+  }
+
   function installReviewTools() {
     stopReviewTools();
     if (!settings.pr.reviewTools || !/^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) return;
     let host = null, root = null, timer = null, selected = '';
     let query, picker, previous, next, count, focus, current, feedback, details;
     let optionsDirty = true;
-    let scrollTimer = null, visibleFile = null;
+    let scrollTimer = null, visibleFile = null, visibleIndex = -1;
     let allFiles = [], matches = [];
     function button(text, action) {
       const el = document.createElement('button');
@@ -1092,10 +1505,53 @@
       updateSelection(index);
       trackCurrent();
     }
+    let blockRequest = 0, blockTarget = null, blockTop = null;
+    const changedCell = '.dft-code--insert, .dft-code--delete';
+    function blockStarts(file) {
+      const starts = [];
+      for (const row of file.querySelectorAll(numberedRows)) {
+        if (!row.querySelector(changedCell)) continue;
+        const prev = row.previousElementSibling;
+        if (!prev?.matches(numberedRows) || !prev.querySelector(changedCell)) starts.push(row);
+      }
+      return starts;
+    }
+    async function navigateBlock(direction) {
+      const request = ++blockRequest;
+      const stillHere = blockTarget?.isConnected && Math.abs(blockTarget.getBoundingClientRect().top - blockTop) < 2;
+      const originFile = stillHere ? blockTarget.closest('.dfd-file') : null;
+      const originIndex = originFile ? allFiles.findIndex(f => f.node === originFile) : findReviewFileIndex(allFiles, visibleIndex);
+      if (originIndex < 0) return;
+      const originTop = stillHere ? blockTop : readingLine;
+      for (let i = originIndex; i >= 0 && i < allFiles.length; i += direction) {
+        const file = allFiles[i].node;
+        if (file.querySelector('.dfd-recycle-holder')) {
+          file.scrollIntoView({block:'start', behavior:'instant'});
+          for (let retry = 0; retry < 15 && file.querySelector('.dfd-recycle-holder'); retry++) {
+            await new Promise(resolve => setTimeout(resolve, 80));
+            if (request !== blockRequest || !file.isConnected) return;
+          }
+          if (file.querySelector('.dfd-recycle-holder')) { feedback.textContent = '文件仍在渲染，请再试一次'; return; }
+        }
+        const starts = blockStarts(file);
+        if (direction < 0) starts.reverse();
+        const target = starts.find(row => i !== originIndex || direction * (row.getBoundingClientRect().top - originTop) > 1);
+        if (!target) continue;
+        alignAt(target, readingLine);
+        blockTarget?.classList.remove('gce-block-target');
+        target.classList.add('gce-block-target');
+        blockTarget = target; blockTop = target.getBoundingClientRect().top;
+        const line = target.dataset.newLine ? '新行 ' + target.dataset.newLine : '旧行 ' + target.dataset.oldLine;
+        feedback.textContent = `${allFiles[i].path} · ${line}`;
+        return;
+      }
+      feedback.textContent = direction > 0 ? '已到最后一处可见改动' : '已到第一处可见改动';
+    }
     function trackCurrent() {
       if (!current) return;
       // 兼容页面滚动和站点内部滚动容器，不假定 window.scrollY。
-      visibleFile = allFiles.find(f => f.node.getBoundingClientRect().bottom > 221) || allFiles.at(-1);
+      visibleIndex = findReviewFileIndex(allFiles, visibleIndex);
+      visibleFile = allFiles[visibleIndex];
       const path = visibleFile?.path || '';
       if (current.textContent !== path) {
         current.textContent = path;
@@ -1199,10 +1655,10 @@
           try { await W.navigator.clipboard.writeText(visibleFile.path); feedback.textContent = '路径已复制'; }
           catch { feedback.textContent = '复制失败，请从文件标题手动复制'; }
         });
-        heading.append(label, current, collapse);
+        heading.append(label, current, button('上一处改动', () => navigateBlock(-1)), button('下一处改动', () => navigateBlock(1)), collapse);
         const contentSearch = button('查找差异 Ctrl+F', openDiffSearch);
-        details.append(query, picker, previous, next, count, focus, contentSearch, copy, feedback);
-        bar.append(heading, details); root.append(style, bar); document.body.appendChild(host);
+        details.append(query, picker, previous, next, count, focus, contentSearch, copy);
+        bar.append(heading, details, feedback); root.append(style, bar); document.body.appendChild(host);
         optionsDirty = true;
       }
       const files = Array.from(main?.querySelectorAll('.dfd-file[id]') || []).map(node => ({
@@ -1227,6 +1683,7 @@
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     refresh();
     stopReviewTools = () => {
+      blockRequest++; blockTarget?.classList.remove('gce-block-target'); blockTarget = null;
       observer.disconnect(); clearTimeout(timer); clearTimeout(scrollTimer); host?.remove();
       document.documentElement.classList.remove('gce-review-page', 'gce-review-focus');
       document.removeEventListener('scroll', onScroll, true);
@@ -1526,6 +1983,7 @@
     html.gce-review-focus .merge-head-title-wrap { display:none !important; }
     html.gce-review-focus .detail-main { padding-top:0 !important; }
     html.gce-review-focus .merge-detail-tabs-anchor { margin-top:0 !important; }
+    html.gce-review-page .gce-block-target > .dft-code { box-shadow:inset 0 2px #3686d9; }
     html.gce-review-page .dfd-file { scroll-margin-top:220px; }
   `);
   log(`v${VERSION} 已启动，性能档位：${settings.perf.level}`, JSON.stringify(settings));
@@ -1540,6 +1998,7 @@
     const routeKey = path + location.search;
     if (routeKey === lastPath) return;
     lastPath = routeKey;
+    resetExpandedContext(routeKey);
     cancelRouteWork(); stopDeclutter(); stopReviewTools(); cancelPRExpansion();
     closeDiffSearch();
     clearDiffCache();

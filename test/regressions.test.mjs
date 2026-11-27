@@ -40,7 +40,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { settings, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { settings, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) {
@@ -363,4 +363,65 @@ test('incremental indexing yields and stops after cancellation', async () => {
   assert.equal([...lookup.get('a')].join(','),'old:2,new:4');
   assert.equal([...lookup.get('b')].join(','),'old:8,new:9');
   assert.equal(hitLineLookup([]).size,0);
+  const batches = hitLineLookup(hits.slice(0, 1));
+  hitLineLookup(hits.slice(1), batches);
+  assert.deepEqual(batches, lookup);
+});
+
+test('expanded context merges in file order without duplicating patch lines or crossing commits', () => {
+  const { mergeExpandedContext, searchDiffRows } = harness().api;
+  const row = (oldLine, newLine, kind, text) => ({oldLine, newLine, kind, text});
+  const base = [{path:'a', rows:[row(5,5,' ','base'), row(10,null,'-','before'), row(null,10,'+','after')]}];
+  const additions = [row(15,15,' ','last'), row(4,4,' ','first'), row(5,5,' ','base'), row(9,9,' ','middle')];
+  const source = new Map([['a',{commit:'abc',rows:new Map(additions.map(r=>[r.newLine,r]))}]]);
+  const merged = mergeExpandedContext(base, source, 'abc');
+  assert.equal(merged.added,3);
+  assert.equal(merged.indexed[0].rows.map(r=>r.text).join(','),'first,base,middle,before,after,last');
+  assert.equal(searchDiffRows(merged.indexed,'middle',false,true).length,0);
+  assert.equal(mergeExpandedContext(base,source,'other').added,0);
+  assert.equal(mergeExpandedContext(base,source,'').added,0);
+  assert.equal(base[0].rows.length,3);
+});
+test('review tracking preserves the first bottom below the reading line across jumps and hidden files', () => {
+  const {findReviewFileIndex} = harness().api;
+  const count = 128;
+  let reads = 0;
+  function filesAt(scroll, hidden) {
+    return Array.from({length:count}, (_, i) => {
+      const top = i * 80 - scroll;
+      const rect = hidden.has(i) ? {top:0,bottom:0,height:0} : {top,bottom:top+65,height:65};
+      return {rect, node:{getBoundingClientRect(){reads++;return rect;}}};
+    });
+  }
+  assert.equal(findReviewFileIndex([], 10), -1);
+  for (const hidden of [new Set(),new Set([0, 16, 62, 63, 64, 65, 127])]) {
+    for (const scroll of [-500, 0, 4, 5000, 5030, 5070, 5074, 5075, 9800, 12000]) {
+      const files = filesAt(scroll, hidden);
+      const expected = files.findIndex(f=>f.rect.bottom>221);
+      for (const hint of [-1, 0, 16, 62, 63, 64, 65, 126, 127, 200]) {
+        assert.equal(findReviewFileIndex(files,hint), expected<0 ? count-1 : expected);
+      }
+    }
+  }
+  const files=filesAt(8000,new Set());
+  reads=0;assert.equal(findReviewFileIndex(files,102),102);assert.equal(reads,1);
+  reads=0;assert.equal(findReviewFileIndex(files,101),102);assert.equal(reads,2);
+  reads=0;assert.equal(findReviewFileIndex(files,0),102);assert.ok(reads<=10);
+});
+test('line-relative search crosses one-sided changes at the reading anchor', () => {
+  const { atSearchOrigin } = harness().api;
+  const file = {path:'a'};
+  const pos = {path:'a', oldLine:null, newLine:10};
+  assert.ok(!atSearchOrigin(file,{oldLine:9,newLine:null},pos));
+  assert.ok(atSearchOrigin(file,{oldLine:null,newLine:10},pos));
+  assert.ok(!atSearchOrigin(file,{oldLine:15,newLine:15},{...pos,afterFile:true}));
+  assert.ok(atSearchOrigin({path:'b'},{newLine:1},pos));
+});
+
+test('loading a partial diff preserves order and both sides of replacements', () => {
+  const { mergeDiffRows } = harness().api;
+  const a = {kind:' ', oldLine:2, newLine:2}, b = {kind:'-', oldLine:5, newLine:null};
+  const c = {kind:'+', oldLine:null, newLine:5}, d = {kind:' ', oldLine:8, newLine:8};
+  assert.deepEqual(Array.from(mergeDiffRows([a,b,c],[b,c,d])),[a,b,c,d]);
+  assert.deepEqual(Array.from(mergeDiffRows([b,c,d],[a,b,c])),[a,b,c,d]);
 });
