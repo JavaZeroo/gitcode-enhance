@@ -2,7 +2,7 @@
 // @name         GitCode / AtomGit 增强
 // @name:en      GitCode Enhance
 // @namespace    https://github.com/JavaZeroo/gitcode-enhance
-// @version      0.3.13
+// @version      0.3.14
 // @description  GitCode 评审增强：Ctrl+F 跨文件差异搜索与高亮、回到顶部、可配置悬浮工具、去干扰和按需性能优化
 // @description:en  Cross-file PR diff search and highlighting, back to top, configurable floating tools, decluttering and on-demand optimizations
 // @author       JavaZeroo
@@ -33,7 +33,7 @@
   // Tampermonkey 在有 @grant 时会把 window 换成沙箱代理，直接改 window.fetch 只会改到沙箱里的副本，
   // 页面代码看不到。要拦截页面请求必须打到页面真正的 window（unsafeWindow）上。
   const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-  const VERSION = '0.3.13';
+  const VERSION = '0.3.14';
   const PR_PAGE_RE = /^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+(?:\/discuss)?\/?$/;
 
   function log(...args) {
@@ -821,6 +821,35 @@
       newLine: visible ? Number(row.dataset.newLine) || null : null, afterFile: rows.length > 0 && low === rows.length };
   }
 
+  // 返回时按旧/新行号重新定位，不能保留可能已被站点回收的行节点。
+  function restoreReadingPosition(position, schedule, finish) {
+    const route = location.pathname + location.search;
+    const side = position.newLine ? 'new' : 'old';
+    const number = position.newLine || position.oldLine;
+    const tried = new WeakSet();
+    let attempts = 0, aligned = false;
+    function locate() {
+      if (route !== location.pathname + location.search) return;
+      const file = document.getElementById('mr_' + position.path);
+      if (!file || fileCommit(file) !== position.commit) { finish('missing'); return; }
+      const row = number && file.querySelector(`tr[data-${side}-line="${number}"]`);
+      if (row) {
+        alignAt(row, position.top);
+        // 等虚拟文件布局稳定，再校准一次屏幕位置。
+        if (aligned) { finish('line'); return; }
+        aligned = true;
+      } else {
+        aligned = false;
+        alignAt(file, position.fileTop);
+        if (!number || ++attempts >= 16) { finish('file'); return; }
+        const expand = position.newLine && contextButtonForLine(file, position.newLine);
+        if (expand && !tried.has(expand)) { tried.add(expand); expand.click(); }
+      }
+      schedule(locate);
+    }
+    locate();
+  }
+
   // 在分批扫描中确定回绕边界；只有一侧行号的新增/删除也沿用 patch 顺序。
   function atSearchOrigin(file, row, origin) {
     if (!origin || file.path !== origin.path) return true;
@@ -1408,20 +1437,11 @@
     document.addEventListener('keydown', escape, true); close.addEventListener('click', cleanup);
     backdrop.addEventListener('click', event => { if (event.target === backdrop) cleanup(); });
     back.addEventListener('click', () => {
-      const file = document.getElementById('mr_' + bookmark.path);
-      if (!file || fileCommit(file) !== bookmark.commit) { summary.textContent = '原文件或提交已变化，无法恢复位置。'; return; }
       clearTimeout(jumpTimer);
-      const selector = bookmark.newLine ? `[data-new-line="${bookmark.newLine}"]` : `[data-old-line="${bookmark.oldLine}"]`;
-      let attempts = 0;
-      function restore() {
-        if (disposed || location.href !== url) return;
-        const row = bookmark.top !== null && file.querySelector(selector);
-        if (row) { alignAt(row, bookmark.top); cleanup(); return; }
-        alignAt(file, bookmark.fileTop);
-        if (bookmark.top !== null && ++attempts < 12) jumpTimer = setTimeout(restore, 100);
+      restoreReadingPosition(bookmark, fn => { jumpTimer = setTimeout(fn, 110); }, outcome => {
+        if (outcome === 'missing') summary.textContent = '原文件或提交已变化，无法恢复位置。';
         else cleanup();
-      }
-      restore();
+      });
     });
     function jump(hit) {
       clearTimeout(jumpTimer);
@@ -1762,7 +1782,9 @@
     stopReviewTools();
     if (!settings.pr.reviewTools || !/^\/[^/]+\/[^/]+\/(?:pull|merge_requests)\/\d+\/diffs\/?$/.test(location.pathname)) return;
     let host = null, root = null, timer = null, selected = '';
-    let query, picker, previous, next, count, focus, current, feedback, details, collapse;
+    let query, picker, previous, next, count, focus, current, feedback, details, collapse, back;
+    let departure = null, restoreTimer = null, feedbackAnchor = null, restoreEvents = null;
+    const route = location.pathname + location.search;
     let optionsDirty = true;
     let scrollTimer = null, visibleFile = null, visibleIndex = -1;
     let allFiles = [], matches = [];
@@ -1788,9 +1810,87 @@
       query.focus({preventScroll:true});
       query.select();
     }
+    function updateBack() {
+      back.hidden = !departure;
+      if (!departure) return;
+      const number = departure.newLine || departure.oldLine;
+      const line = number ? ` · ${departure.newLine ? '新' : '旧'}行 ${number}` : '';
+      back.textContent = '返回 ' + departure.path.split('/').pop() + line;
+      back.title = '返回 ' + departure.path + line;
+    }
+    function rememberDeparture(path, origin) {
+      if (origin && origin.path !== path) { departure = origin; updateBack(); }
+    }
+    function setFeedback(message, anchor = visibleFile?.node) {
+      feedback.textContent = message;
+      feedbackAnchor = message && anchor ? {node:anchor, top:anchor.getBoundingClientRect().top} : null;
+    }
+    function cancelReturn() {
+      clearTimeout(restoreTimer);
+      restoreEvents?.abort(); restoreEvents = null;
+    }
+    function returnToDeparture() {
+      if (!departure || location.pathname + location.search !== route) return;
+      const origin = departure;
+      ++blockRequest; cancelReturn();
+      restoreEvents = new W.AbortController();
+      const options = {capture:true, passive:true, signal:restoreEvents.signal};
+      for (const type of ['wheel', 'pointerdown', 'keydown']) W.addEventListener(type, cancelReturn, options);
+      restoreReadingPosition(origin, fn => { restoreTimer = setTimeout(fn, 110); }, outcome => {
+        cancelReturn();
+        const exact = outcome === 'line' || (outcome === 'file' && origin.top === null);
+        if (exact || outcome === 'missing') { departure = null; updateBack(); }
+        trackCurrent();
+        if (exact) {
+          setFeedback('');
+          focusFile(document.getElementById('mr_' + origin.path));
+        }
+        else setFeedback(outcome === 'missing' ? '原文件或提交已变化，无法恢复位置' : '已返回原文件，原行暂未显示');
+      });
+    }
+    // 原生查找器的键盘和鼠标都触发 listbox.select；在站点滚动之前记住出发位置。
+    function nativeNavigation(event) {
+      if (location.pathname + location.search !== route || !back || event.defaultPrevented) return;
+      let path;
+      if (event.type === 'listbox.select') {
+        const option = event.target.closest?.('[role="option"]');
+        const list = option?.closest('[role="listbox"]');
+        if (!list?.id || list.id !== document.querySelector('.dfd-tree-search')?.getAttribute('aria-controls')) return;
+        path = option.querySelector('[data-slot="itemLabel"]')?.textContent.trim();
+      } else {
+        path = event.target.closest?.('.fdt-file[title]')?.title;
+      }
+      if (!path || !document.getElementById('mr_' + path)) return;
+      cancelReturn(); ++blockRequest;
+      rememberDeparture(path, readingPosition());
+    }
+    function focusFile(node) {
+      if (!node) return;
+      if (!node.hasAttribute('tabindex')) {
+        node.tabIndex = -1;
+        node.addEventListener('blur', () => node.removeAttribute('tabindex'), {once:true});
+      }
+      node.focus({preventScroll:true});
+    }
+    function filterKey(event) {
+      if (event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      const index = matches.findIndex(file => file.id === selected);
+      if (event.key === 'Escape') {
+        event.preventDefault(); collapse.click(); focusFile(visibleFile?.node);
+      } else if (event.key === 'Enter' && index >= 0) {
+        event.preventDefault();
+        if (!event.repeat) { navigate(index); collapse.click(); focusFile(matches[index].node); }
+      } else if (matches.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault();
+        const nextIndex = Math.max(0, Math.min(matches.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
+        selected = matches[nextIndex].id; updateSelection(nextIndex);
+      }
+    }
     function navigate(index) {
       const file = matches[index];
       if (!file) return;
+      cancelReturn(); ++blockRequest;
+      rememberDeparture(file.path, readingPosition());
       selected = file.id;
       file.node.scrollIntoView({ block: 'start', behavior: 'auto' });
       updateSelection(index);
@@ -1808,6 +1908,8 @@
       return starts;
     }
     async function navigateBlock(direction) {
+      cancelReturn();
+      const origin = readingPosition();
       const request = ++blockRequest;
       const stillHere = blockTarget?.isConnected && Math.abs(blockTarget.getBoundingClientRect().top - blockTop) < 2;
       const originFile = stillHere ? blockTarget.closest('.dfd-file') : null;
@@ -1822,27 +1924,33 @@
             await new Promise(resolve => setTimeout(resolve, 80));
             if (request !== blockRequest || !file.isConnected) return;
           }
-          if (file.querySelector('.dfd-recycle-holder')) { feedback.textContent = '文件仍在渲染，请再试一次'; return; }
+          if (file.querySelector('.dfd-recycle-holder')) { setFeedback('文件仍在渲染，请再试一次', file); return; }
         }
         const starts = blockStarts(file);
         if (direction < 0) starts.reverse();
         const target = starts.find(row => i !== originIndex || direction * (row.getBoundingClientRect().top - originTop) > 1);
         if (!target) continue;
+        rememberDeparture(allFiles[i].path, origin);
         alignAt(target, readingLine);
         blockTarget?.classList.remove('gce-block-target');
         target.classList.add('gce-block-target');
         blockTarget = target; blockTop = target.getBoundingClientRect().top;
         const line = target.dataset.newLine ? '新行 ' + target.dataset.newLine : '旧行 ' + target.dataset.oldLine;
-        feedback.textContent = `${allFiles[i].path} · ${line}`;
+        setFeedback(`${allFiles[i].path} · ${line}`, target);
         return;
       }
-      feedback.textContent = direction > 0 ? '已到最后一处可见改动' : '已到第一处可见改动';
+      setFeedback(direction > 0 ? '已到最后一处可见改动' : '已到第一处可见改动');
     }
     function trackCurrent() {
       if (!current) return;
       // 兼容页面滚动和站点内部滚动容器，不假定 window.scrollY。
       visibleIndex = findReviewFileIndex(allFiles, visibleIndex);
       visibleFile = allFiles[visibleIndex];
+      if (feedbackAnchor && (!feedbackAnchor.node.isConnected ||
+          Math.abs(feedbackAnchor.node.getBoundingClientRect().top - feedbackAnchor.top) > 4)) setFeedback('');
+      if (blockTarget && (!blockTarget.isConnected || Math.abs(blockTarget.getBoundingClientRect().top - blockTop) > 4)) {
+        blockTarget.classList.remove('gce-block-target'); blockTarget = null;
+      }
       const path = visibleFile?.path || '';
       if (current.title !== path) {
         current.title = path;
@@ -1851,7 +1959,7 @@
         current.parentElement.querySelector('.full-path').textContent = path;
       }
       // 搜索时保留用户选中的匹配项；无筛选时让前后跳转跟随当前阅读位置。
-      if (visibleFile && !query.value.trim() && root.activeElement !== picker && selected !== visibleFile.id) {
+      if (visibleFile && !query.value.trim() && root.activeElement !== picker && root.activeElement !== query && selected !== visibleFile.id) {
         selected = visibleFile.id;
         if (!details.hidden) updateSelection(matches.findIndex(f => f.id === selected));
       }
@@ -1910,6 +2018,7 @@
           .current { cursor:pointer; display:block; min-width:0; max-width:480px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
           .short-path { display:none; }
           .full-path { overflow-wrap:anywhere; user-select:all; }
+          .return-file {max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
           .feedback:empty {display:none;}
           .details { display:flex; flex-wrap:wrap; align-items:center; gap:8px; width:100%; }
           .details[hidden] { display:none; }
@@ -1921,9 +2030,10 @@
         const bar = document.createElement('div'); bar.className = 'bar';
         bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'PR 评审工具');
         query = document.createElement('input'); query.type = 'search'; query.placeholder = '搜索文件路径';
-        query.title = '搜索文件路径（T）';
+        query.title = '↑ / ↓ 选择文件，Enter 跳转，Esc 返回代码';
         query.setAttribute('aria-keyshortcuts', 'T');
         query.setAttribute('aria-label', '搜索评审文件'); query.addEventListener('input', renderOptions);
+        query.addEventListener('keydown', filterKey);
         picker = document.createElement('select'); picker.setAttribute('aria-label', '跳转到评审文件');
         picker.addEventListener('change', () => navigate(matches.findIndex(f => f.id === picker.value)));
         previous = button('上一文件', () => navigate(matches.findIndex(f => f.id === selected) - 1));
@@ -1959,13 +2069,14 @@
         feedback = document.createElement('span'); feedback.className = 'feedback'; feedback.setAttribute('role', 'status');
         const copy = button('复制当前路径', async () => {
           if (!visibleFile) return;
-          try { await W.navigator.clipboard.writeText(visibleFile.path); feedback.textContent = '路径已复制'; }
-          catch { feedback.textContent = '复制失败，请从文件标题手动复制'; }
+          try { await W.navigator.clipboard.writeText(visibleFile.path); setFeedback('路径已复制'); }
+          catch { setFeedback('复制失败，请从文件标题手动复制'); }
         });
         heading.append(label, pathDetails, button('上一处改动', () => navigateBlock(-1)), button('下一处改动', () => navigateBlock(1)), collapse);
         const contentSearch = button('查找差异 Ctrl+F', openDiffSearch);
         details.append(query, picker, previous, next, count, focus, contentSearch, copy);
-        bar.append(heading, details, feedback); root.append(style, bar); document.body.appendChild(host);
+        back = button('', returnToDeparture); back.className = 'return-file'; updateBack();
+        bar.append(heading, details, back, feedback); root.append(style, bar); document.body.appendChild(host);
         optionsDirty = true;
       }
       const files = Array.from(main?.querySelectorAll('.dfd-file[id]') || []).map(node => ({
@@ -1987,6 +2098,8 @@
       if ((!host?.isConnected || filesChanged) && timer === null) timer = setTimeout(refresh, 150);
     });
     observer.observe(document, { childList: true, subtree: true });
+    document.addEventListener('listbox.select', nativeNavigation, true);
+    document.addEventListener('click', nativeNavigation, true);
     W.addEventListener('keydown', focusFileFilter);
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
     refresh();
@@ -1994,6 +2107,9 @@
       blockRequest++; blockTarget?.classList.remove('gce-block-target'); blockTarget = null;
       observer.disconnect(); clearTimeout(timer); clearTimeout(scrollTimer); host?.remove();
       document.documentElement.classList.remove('gce-review-page', 'gce-review-focus');
+      cancelReturn();
+      document.removeEventListener('listbox.select', nativeNavigation, true);
+      document.removeEventListener('click', nativeNavigation, true);
       W.removeEventListener('keydown', focusFileFilter);
       document.removeEventListener('scroll', onScroll, true);
       allFiles = []; matches = []; visibleFile = null; host = null;

@@ -40,7 +40,7 @@ function harness(path = '/org/repo/pull/10/discuss') {
   context.window = context;
   // Run the real definitions and settings, stopping before UI/bootstrap side effects.
   const prefix = source.slice(0, source.indexOf('  installHeaderButton();'));
-  vm.runInContext(prefix + '\n globalThis.api = { settings, handleCommentShortcut, selectedDiffText, readBlobText, sourceContextRows, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
+  vm.runInContext(prefix + '\n globalThis.api = { settings, restoreReadingPosition, handleCommentShortcut, selectedDiffText, readBlobText, sourceContextRows, mergeDiffRows, atSearchOrigin, declutter, stopDeclutter: () => stopDeclutter(), recordBlock, expireDiffCache, clearDiffCache, cache: () => diffSearchCache, seedCache: value => { diffSearchCache = value; }, afterPageReady, codeTextRanges, hitLineLookup, textMatchOffsets, floatingStyle, findReviewFileIndex, mergeExpandedContext, indexDiffSnapshot, indexDiffSnapshotAsync, prioritizeDiffFiles, PR_PAGE_RE, readDiffSnapshot, parseDiffLines, searchDiffRows, stats, matchRule, installNetworkBlocking, installIconSpritePruner, autoExpandPRComments, cancel: () => cancelPRExpansion() }; })();', context);
   return {
     context, api: context.api, attrs, uses, observers, timers,
     setButton(value) {
@@ -487,4 +487,33 @@ test('comment submit keys use the active PR editor and do not submit twice or du
   button.disabled = true;
   assert.ok(press());
   assert.equal(clicks,3);
+});
+
+test('return to a deleted line waits for remount and recalibrates at the original pixel', () => {
+  const {api,context} = harness('/a/b/pull/1/diffs');
+  const pos = {path:'a.js', commit:'head', fileTop:-200, top:214, oldLine:25, newLine:null};
+  const viewport = {offset:0};
+  const row = {getBoundingClientRect:()=>({top:550-viewport.offset})};
+  let mounted = false;
+  context.document.getElementById = () => ({
+    querySelector(selector) {
+      if (selector === '.dfd-path-new') return {getAttribute:()=>'/a/b/blob/head/a.js'};
+      assert.equal(selector, 'tr[data-old-line="25"]');
+      return mounted ? row : null;
+    },
+    getBoundingClientRect:()=>({top:300-viewport.offset}),
+  });
+  context.scrollBy = ({top}) => { viewport.offset += top; };
+  const callbacks = [];
+  let outcome;
+  api.restoreReadingPosition(pos, fn=>callbacks.push(fn), result=>{ outcome = result; });
+  assert.equal(viewport.offset,500);
+  mounted = true;
+  callbacks.shift()();
+  viewport.offset -= 15;
+  callbacks.shift()();
+  assert.equal(row.getBoundingClientRect().top,214);
+  assert.equal(outcome,'line');
+  api.restoreReadingPosition({...pos,commit:'other'},()=>assert.fail(),result=>{outcome=result;});
+  assert.equal(outcome,'missing');
 });
